@@ -1,0 +1,397 @@
+// Prisma Schema — Azure Cost & Billing Portal
+// Run: prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// AUTH (NextAuth compatible)
+// ─────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  password      String?   // bcrypt hash for credentials login
+  role          UserRole  @default(READONLY)
+  emailVerified DateTime?
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // NextAuth relations
+  accounts      Account[]
+  sessions      Session[]
+
+  // App relations
+  auditLogs     AuditLog[]
+  anomalyConfigs AnomalyConfig[]
+  deletionSchedules DeletionSchedule[]
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ─────────────────────────────────────────────
+// AZURE TENANT MANAGEMENT
+// ─────────────────────────────────────────────
+
+model Tenant {
+  id               String       @id @default(cuid())
+  name             String
+  azureTenantId    String       @unique
+  clientId         String
+  clientSecretEnc  String       @db.Text  // AES-256-CBC encrypted
+  status           TenantStatus @default(PENDING)
+  errorMessage     String?
+  lastSyncAt       DateTime?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  subscriptions    Subscription[]
+  costRecords      CostRecord[]
+  budgets          Budget[]
+  anomalyConfigs   AnomalyConfig[]
+  emailAlerts      EmailAlert[]
+  resourceGroups   ResourceGroup[]
+  resources        Resource[]
+  deletionSchedules DeletionSchedule[]
+
+  @@map("tenants")
+}
+
+model Subscription {
+  id               String   @id @default(cuid())
+  tenantId         String
+  subscriptionId   String                          // Azure subscription GUID
+  subscriptionName String?
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  costRecords      CostRecord[]
+  budgets          Budget[]
+  resourceGroups   ResourceGroup[]
+  resources        Resource[]
+
+  @@unique([tenantId, subscriptionId])
+  @@map("subscriptions")
+}
+
+// ─────────────────────────────────────────────
+// COST DATA
+// ─────────────────────────────────────────────
+
+model CostRecord {
+  id             String   @id @default(cuid())
+  tenantId       String
+  subscriptionId String   // FK to Subscription.id (internal UUID)
+  date           DateTime @db.Date
+  resourceGroup  String?
+  serviceName    String?  // Azure meter category (e.g. "Virtual Machines")
+  cost           Decimal  @db.Decimal(18, 6)
+  currency       String   @default("USD")
+  normalizedCostUsd Decimal @db.Decimal(18, 6) @default(0) // cost converted to USD at ingestion
+  ingestedAt     DateTime @default(now())
+
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, date])
+  @@index([subscriptionId, date])
+  @@index([date])
+  @@map("cost_records")
+}
+
+// ─────────────────────────────────────────────
+// BUDGETS
+// ─────────────────────────────────────────────
+
+model Budget {
+  id             String        @id @default(cuid())
+  tenantId       String
+  subscriptionId String?       // null = tenant-wide or RG-scoped budget
+  name           String
+  amount         Decimal       @db.Decimal(18, 2)
+  timeGrain      BudgetGrain   @default(MONTHLY)
+  startDate      DateTime      @db.Date
+  endDate        DateTime?     @db.Date
+  alertThreshold Decimal       @db.Decimal(5, 2) @default(0.80)
+  azureBudgetId  String?       @unique   // Azure Resource Manager budget resource ID
+  // Granular scope fields
+  scopeType      BudgetScope   @default(TENANT)  // tenant | subscription | resource_group
+  scopeId        String?                          // tenantId, subscriptionId, or RG name
+  source         BudgetSource  @default(PORTAL)  // portal | azure_native
+  azurePortalUrl String?                          // deep link to Azure Portal for azure_native budgets
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
+  emailAlerts    EmailAlert[]
+
+  @@map("budgets")
+}
+
+// ─────────────────────────────────────────────
+// ANOMALY DETECTION CONFIG
+// ─────────────────────────────────────────────
+
+model AnomalyConfig {
+  id            String   @id @default(cuid())
+  tenantId      String?  // null = global default
+  thresholdPct  Decimal  @db.Decimal(5, 2) @default(50.00) // % spike vs 7-day avg
+  updatedById   String
+  updatedAt     DateTime @updatedAt
+
+  tenant        Tenant?  @relation(fields: [tenantId], references: [id])
+  updatedBy     User     @relation(fields: [updatedById], references: [id])
+
+  @@map("anomaly_configs")
+}
+
+// ─────────────────────────────────────────────
+// EMAIL ALERT LOG
+// ─────────────────────────────────────────────
+
+model EmailAlert {
+  id             String          @id @default(cuid())
+  budgetId       String?
+  tenantId       String?
+  alertType      AlertType
+  sentAt         DateTime        @default(now())
+  recipientEmail String
+  subject        String?
+  metadata       Json?           // extra context (anomaly details, budget %, etc.)
+
+  budget         Budget?         @relation(fields: [budgetId], references: [id])
+  tenant         Tenant?         @relation(fields: [tenantId], references: [id])
+
+  @@map("email_alerts")
+}
+
+// ─────────────────────────────────────────────
+// AUDIT LOG
+// ─────────────────────────────────────────────
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  userId       String
+  action       String   // e.g. "VIEW_DASHBOARD", "EXPORT_CSV", "UPDATE_TENANT"
+  resourceType String?  // e.g. "tenant", "budget", "report"
+  resourceId   String?
+  ipAddress    String?
+  userAgent    String?
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  user         User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("audit_log")
+}
+
+// ─────────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  FINANCE
+  READONLY
+}
+
+enum TenantStatus {
+  PENDING
+  CONNECTED
+  ERROR
+}
+
+enum BudgetGrain {
+  MONTHLY
+  QUARTERLY
+  ANNUALLY
+}
+
+enum AlertType {
+  BUDGET_THRESHOLD
+  ANOMALY
+}
+
+enum BudgetScope {
+  TENANT
+  SUBSCRIPTION
+  RESOURCE_GROUP
+}
+
+enum BudgetSource {
+  PORTAL
+  AZURE_NATIVE
+}
+
+enum DeletionScopeType {
+  RESOURCE_GROUP
+  SUBSCRIPTION
+  MULTIPLE_RESOURCE_GROUPS
+}
+
+enum DeletionRunStatus {
+  DRY_RUN
+  NOTIFIED
+  EXECUTING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// ─────────────────────────────────────────────
+// RESOURCE INVENTORY
+// ─────────────────────────────────────────────
+
+model ResourceGroup {
+  id             String    @id @default(cuid())
+  tenantId       String
+  subscriptionId String    // FK to Subscription.id (internal UUID)
+  name           String
+  location       String?
+  tags           Json?
+  isActive       Boolean   @default(true)  // false = seen as deleted in last sync
+  lastSyncedAt   DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  resources      Resource[]
+
+  @@unique([tenantId, subscriptionId, name])
+  @@index([tenantId])
+  @@index([subscriptionId])
+  @@map("resource_groups")
+}
+
+model Resource {
+  id                String    @id @default(cuid())
+  tenantId          String
+  subscriptionId    String    // FK to Subscription.id (internal UUID)
+  resourceGroupId   String    // FK to ResourceGroup.id
+  resourceId        String    // Azure full ARM resource ID
+  name              String
+  type              String    // e.g. Microsoft.Compute/virtualMachines
+  location          String?
+  sku               Json?
+  provisioningState String?
+  tags              Json?
+  isActive          Boolean   @default(true)  // false = deleted/decommissioned
+  manuallyRemoved   Boolean   @default(false) // soft-deleted by portal admin (NOT an Azure delete)
+  lastSyncedAt      DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  tenant            Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription      Subscription  @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  resourceGroup     ResourceGroup @relation(fields: [resourceGroupId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, resourceId])
+  @@index([tenantId, subscriptionId])
+  @@index([tenantId, type])
+  @@index([resourceGroupId])
+  @@map("resources")
+}
+
+// ─────────────────────────────────────────────
+// DELETION SCHEDULES
+// ─────────────────────────────────────────────
+
+model DeletionSchedule {
+  id                    String            @id @default(cuid())
+  tenantId              String
+  name                  String
+  scopeType             DeletionScopeType
+  targetIds             Json              // array of RG names or subscription IDs
+  cronExpression        String
+  isEnabled             Boolean           @default(false)  // disabled until first dry-run approved
+  liveDeletesApproved   Boolean           @default(false)  // must be true for real deletes to fire
+  excludeTagKey         String            @default("donotdelete")
+  notifyBeforeMinutes   Int               @default(60)
+  notifyEmails          String            @default("")     // comma-separated override list
+  createdById           String
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  tenant                Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy             User              @relation(fields: [createdById], references: [id])
+  runs                  DeletionRun[]
+
+  @@index([tenantId])
+  @@map("deletion_schedules")
+}
+
+model DeletionRun {
+  id                String            @id @default(cuid())
+  scheduleId        String
+  status            DeletionRunStatus @default(DRY_RUN)
+  plannedResources  Json?             // snapshot of resources targeted
+  deletedResources  Json?             // successfully deleted
+  failedResources   Json?             // { resourceId, error } per failure
+  skippedResources  Json?             // skipped due to exclude tag
+  startedAt         DateTime          @default(now())
+  completedAt       DateTime?
+  cancelledBy       String?           // userId if cancelled
+  cancelToken       String?           @unique  // short token for cancel link in email
+  notifiedAt        DateTime?
+
+  schedule          DeletionSchedule  @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+
+  @@index([scheduleId, startedAt])
+  @@map("deletion_runs")
+}
+
+// ─── Add deletionSchedules relation to User ───────────────────────────────────
+// (handled via DeletionSchedule.createdBy FK above)
