@@ -68,24 +68,15 @@ export default function BudgetsPage() {
   async function handleSyncAzureBudgets() {
     setSyncing(true);
     try {
-      const res = await fetch("/api/jobs/ingest", { method: "POST" });
+      const res = await fetch("/api/jobs/sync-budgets", { method: "POST" });
       const data = await res.json();
-      if (data.hasFailures) {
-        const failed = (data.tenants as { tenant: string; status: string; error?: string }[])
-          ?.filter((t) => t.status === "failed")
-          .map((t) => `${t.tenant}: ${t.error ?? "unknown"}`)
-          .join("; ");
-        toast({
-          variant: "destructive",
-          title: "Ingest completed with failures",
-          description: failed || "One or more tenants failed to sync",
-        });
-      } else if (res.ok) {
-        toast({ variant: "success", title: "Azure budget sync complete" });
+      if (res.ok) {
+        toast({ variant: "success", title: "Azure budgets synced", description: data.message });
+        fetchBudgets(); // Refresh the list immediately after sync
       } else {
         toast({ variant: "destructive", title: "Sync failed", description: data.error ?? `HTTP ${res.status}` });
       }
-    } catch { toast({ variant: "destructive", title: "Error" }); }
+    } catch { toast({ variant: "destructive", title: "Network error during sync" }); }
     finally { setSyncing(false); }
   }
 

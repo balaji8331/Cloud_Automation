@@ -7,7 +7,7 @@ interface DeletionRun {
   id: string; status: string; startedAt: string; completedAt: string | null;
   plannedResources: { name: string; type: string; resourceGroup: string }[] | null;
   deletedResources: { name: string }[] | null;
-  failedResources: { name: string; error: string }[] | null;
+  failedResources: { name?: string; error: string }[] | null;
   skippedResources: { name: string; reason: string }[] | null;
   cancelledBy: string | null;
 }
@@ -103,7 +103,10 @@ export function RunHistoryPanel({ scheduleId, onClose }: {
                         <ul className="space-y-1">
                           {run.failedResources.map((f, i) => (
                             <li key={i} className="text-xs text-red-700 bg-red-50 rounded px-2 py-1">
-                              <strong>{f.name}</strong>: {f.error}
+                              {f.name
+                                ? <><strong>{f.name}</strong>: {f.error}</>
+                                : <span>{f.error ?? "Unknown fatal error"}</span>
+                              }
                             </li>
                           ))}
                         </ul>

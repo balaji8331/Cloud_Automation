@@ -1,295 +1,413 @@
 /**
- * Deletion executor — handles scheduled automated resource deletion.
+ * Deletion executor — handles dry runs and live deletion runs.
  *
  * Safety guarantees:
- * 1. First run is ALWAYS dry-run only — no actual deletes.
- * 2. Live deletes only fire if schedule.liveDeletesApproved = true.
+ * 1. executeDryRun: queries resources, emails list, marks DRY_RUN — never deletes.
+ * 2. executeLiveRun: only fires if approvalStatus = APPROVED.
  * 3. Resources with excludeTagKey present are always skipped.
  * 4. Cancellable via cancel token up until execution starts.
- * 5. Resources deleted in dependency-safe order (VMs before NICs/disks).
- * 6. 409 dependency conflicts are logged and skipped, not fatal.
+ * 5. Resources deleted in dependency-safe order (type depth + explicit priority table).
+ * 6. Nested-resource retry: if parent fails with "nested resources exist", children
+ *    are inserted ahead of it in the queue and parent is retried (max 3 times).
+ * 7. API versions resolved dynamically from Azure Resource Providers API (1h cache).
  */
-import cron, { ScheduledTask } from "node-cron";
 import prisma from "@/lib/db";
+import { ApprovalStatus } from "@prisma/client";
 import { getTenantCredentials } from "@/lib/db/tenants";
 import { queryResourceGraph } from "@/lib/azure/resourceGraph";
 import { deleteAzureResource } from "@/lib/azure/deleteResource";
 import { sendEmail } from "@/lib/email";
+import { randomBytes } from "crypto";
 import type { AzureResource } from "@/lib/azure/resourceGraph";
 
-// Map of scheduleId → running cron task
-const activeTasks = new Map<string, ScheduledTask>();
+// ─── Dependency-aware deletion ordering ───────────────────────────────────────
 
-// ─── Dependency order ─────────────────────────────────────────────────────────
-// Resources that should be deleted AFTER others (dependents first)
-const DELETION_ORDER_LATER = [
-  "microsoft.network/networkinterfaces",
-  "microsoft.network/publicipaddresses",
-  "microsoft.compute/disks",
-  "microsoft.network/virtualnetworks",
-  "microsoft.network/networksecuritygroups",
-];
+const PARENT_TYPE_PRIORITY: Record<string, number> = {
+  "microsoft.compute/virtualmachines": 0,
+  "microsoft.compute/virtualmachines/extensions": 100,
+  "microsoft.network/networkinterfaces": 50,
+  "microsoft.network/publicipaddresses": 60,
+  "microsoft.compute/disks": 50,
+  "microsoft.cognitiveservices/accounts": 0,
+  "microsoft.cognitiveservices/accounts/projects": 100,
+  "microsoft.cognitiveservices/accounts/deployments": 100,
+  "microsoft.cognitiveservices/accounts/models": 100,
+  "microsoft.network/virtualnetworks": 0,
+  "microsoft.network/virtualnetworks/subnets": 100,
+  "microsoft.network/networksecuritygroups": 10,
+  "microsoft.storage/storageaccounts": 0,
+  "microsoft.storage/storageaccounts/blobservices": 100,
+  "microsoft.storage/storageaccounts/fileservices": 100,
+  "microsoft.storage/storageaccounts/queueservices": 100,
+  "microsoft.storage/storageaccounts/tableservices": 100,
+  "microsoft.sql/servers": 0,
+  "microsoft.sql/servers/databases": 100,
+  "microsoft.sql/servers/firewallrules": 100,
+  "microsoft.web/serverfarms": 0,
+  "microsoft.web/sites": 50,
+  "microsoft.web/sites/slots": 100,
+  "microsoft.containerregistry/registries": 0,
+  "microsoft.containerregistry/registries/webhooks": 100,
+  "microsoft.keyvault/vaults": 0,
+  "microsoft.keyvault/vaults/keys": 100,
+  "microsoft.keyvault/vaults/secrets": 100,
+};
 
-function sortByDeletionOrder(resources: AzureResource[]) {
+export function sortResourcesForDeletion(resources: AzureResource[]): AzureResource[] {
   return [...resources].sort((a, b) => {
-    const ai = DELETION_ORDER_LATER.indexOf(a.type.toLowerCase());
-    const bi = DELETION_ORDER_LATER.indexOf(b.type.toLowerCase());
-    // Resources NOT in the list go first (ai = -1 → sort before listed ones)
-    if (ai === -1 && bi === -1) return 0;
-    if (ai === -1) return -1;
-    if (bi === -1) return 1;
-    return ai - bi;
+    const typeDepthA = a.type.split("/").length;
+    const typeDepthB = b.type.split("/").length;
+    if (typeDepthA !== typeDepthB) return typeDepthB - typeDepthA;
+    const idDepthA = a.id.split("/").length;
+    const idDepthB = b.id.split("/").length;
+    if (idDepthA !== idDepthB) return idDepthB - idDepthA;
+    const prioA = PARENT_TYPE_PRIORITY[a.type.toLowerCase()] ?? 50;
+    const prioB = PARENT_TYPE_PRIORITY[b.type.toLowerCase()] ?? 50;
+    if (prioA !== prioB) return prioB - prioA;
+    return a.type.localeCompare(b.type);
   });
 }
 
-// ─── Execute a single schedule run ────────────────────────────────────────────
+function isNestedResourceError(msg: string): boolean {
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes("nested resource") ||
+    lower.includes("child resource") ||
+    (lower.includes("cannot delete") && lower.includes("exist"))
+  );
+}
 
-export async function executeScheduleRun(scheduleId: string): Promise<void> {
+function findChildResources(
+  parent: AzureResource,
+  allResources: AzureResource[],
+  errorMessage?: string
+): AzureResource[] {
+  const childPrefix = parent.id.toLowerCase() + "/";
+  const byPrefix = allResources.filter(
+    (r) => r.id !== parent.id && r.id.toLowerCase().startsWith(childPrefix)
+  );
+  if (byPrefix.length > 0) return byPrefix;
+
+  if (errorMessage) {
+    const quoted = errorMessage.match(/'([^']+)'/g) ?? [];
+    const names = new Set<string>();
+    for (const q of quoted) {
+      const lastSegment = q.slice(1, -1).split("/").pop();
+      if (lastSegment) names.add(lastSegment.toLowerCase());
+    }
+    return allResources.filter(
+      (r) => r.id !== parent.id && names.has(r.name.toLowerCase())
+    );
+  }
+  return [];
+}
+
+// ─── Shared resource query helper ─────────────────────────────────────────────
+
+async function queryTargetedResources(
+  schedule: {
+    tenantId: string;
+    scopeType: string;
+    targetIds: unknown;
+    excludeTagKey: string;
+  }
+): Promise<{
+  creds: NonNullable<Awaited<ReturnType<typeof getTenantCredentials>>>;
+  ordered: AzureResource[];
+  skipped: AzureResource[];
+  allResources: AzureResource[];
+} | null> {
+  const creds = await getTenantCredentials(schedule.tenantId);
+  if (!creds) return null;
+
+  const targetIds = schedule.targetIds as string[];
+  const azureSubIds = creds.subscriptions.map((s) => s.subscriptionId);
+
+  const { resources: allResources } = await queryResourceGraph(
+    { azureTenantId: creds.azureTenantId, clientId: creds.clientId, clientSecret: creds.clientSecret },
+    azureSubIds
+  );
+
+  let targeted = allResources.filter((r) => {
+    if (schedule.scopeType === "RESOURCE_GROUP" || schedule.scopeType === "MULTIPLE_RESOURCE_GROUPS") {
+      return (targetIds).some((t) => t.toLowerCase() === r.resourceGroup.toLowerCase());
+    }
+    if (schedule.scopeType === "SUBSCRIPTION") {
+      return targetIds.includes(r.subscriptionId);
+    }
+    return false;
+  });
+
+  const skipped = targeted.filter((r) =>
+    r.tags && Object.keys(r.tags).some((k) => k.toLowerCase() === schedule.excludeTagKey.toLowerCase())
+  );
+  targeted = targeted.filter((r) =>
+    !r.tags || !Object.keys(r.tags).some((k) => k.toLowerCase() === schedule.excludeTagKey.toLowerCase())
+  );
+
+  const ordered = sortResourcesForDeletion(targeted);
+  return { creds, ordered, skipped, allResources };
+}
+
+// ─── DRY RUN ──────────────────────────────────────────────────────────────────
+
+/**
+ * Execute a dry run for a schedule:
+ * - Queries live resources from Resource Graph
+ * - Saves planned_resources snapshot
+ * - Sends dry-run email with Approve link
+ * - Sets run status = DRY_RUN
+ * - Does NOT modify any Azure resources
+ */
+export async function executeDryRun(scheduleId: string): Promise<string> {
   const schedule = await prisma.deletionSchedule.findUnique({
     where: { id: scheduleId },
     include: { tenant: true, createdBy: { select: { email: true } } },
   });
 
   if (!schedule || !schedule.isEnabled) {
-    console.log(`[DeletionExecutor] Schedule ${scheduleId} is disabled or not found`);
-    return;
+    throw new Error(`Schedule ${scheduleId} not found or disabled`);
   }
 
-  const creds = await getTenantCredentials(schedule.tenantId);
-  if (!creds) {
-    console.error(`[DeletionExecutor] Cannot load creds for tenant ${schedule.tenantId}`);
-    return;
-  }
+  const result = await queryTargetedResources(schedule);
+  if (!result) throw new Error(`Cannot load credentials for tenant ${schedule.tenantId}`);
+  const { ordered, skipped } = result;
 
-  const isDryRun = !schedule.liveDeletesApproved;
-  const cancelToken = nanoid(16);
+  // Generate a secure approve token (expires in 7 days)
+  const approveToken = randomBytes(24).toString("hex");
+  const approveTokenExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  await prisma.deletionSchedule.update({
+    where: { id: scheduleId },
+    data: { approveToken, approveTokenExpiresAt },
+  });
 
   // Create run record
   const run = await prisma.deletionRun.create({
     data: {
       scheduleId,
-      status: isDryRun ? "DRY_RUN" : "NOTIFIED",
-      cancelToken,
+      status: "DRY_RUN",
+      plannedResources: ordered.map((r) => ({
+        id: r.id, name: r.name, type: r.type,
+        location: r.location, resourceGroup: r.resourceGroup,
+      })),
+      skippedResources: skipped.map((r) => ({
+        id: r.id, name: r.name, reason: `tag: ${schedule.excludeTagKey}`,
+      })),
+      completedAt: new Date(),
+      notifiedAt: new Date(),
     },
   });
 
-  console.log(`[DeletionExecutor] Run ${run.id} started (schedule="${schedule.name}" isDryRun=${isDryRun})`);
+  // Send dry-run email with one-click Approve link
+  const approveUrl = `${process.env.NEXTAUTH_URL}/api/automation/schedules/${scheduleId}/approve?token=${approveToken}`;
+  await sendEmail({
+    to: getNotifyEmails(schedule.notifyEmails),
+    subject: `[DRY RUN] "${schedule.name}" — ${ordered.length} resources would be deleted`,
+    html: dryRunEmailHtml({
+      scheduleName: schedule.name,
+      tenantName: schedule.tenant.name,
+      resources: ordered,
+      skipped,
+      approveUrl,
+      cronDescription: schedule.cronExpression,
+    }),
+  });
+
+  console.log(`[DeletionExecutor] Dry run ${run.id} complete for "${schedule.name}" — ${ordered.length} resources, email sent`);
+  return run.id;
+}
+
+// ─── LIVE RUN ─────────────────────────────────────────────────────────────────
+
+/**
+ * Execute a live deletion run.
+ * Called by the AutomationPoller when scheduledExecutionAt <= now.
+ * The run record (status=NOTIFIED) must already exist — this function
+ * transitions it through EXECUTING → COMPLETED/FAILED.
+ */
+export async function executeLiveRun(scheduleId: string, runId: string): Promise<void> {
+  const schedule = await prisma.deletionSchedule.findUnique({
+    where: { id: scheduleId },
+    include: { tenant: true, createdBy: { select: { email: true } } },
+  });
+
+  if (!schedule) {
+    console.error(`[DeletionExecutor] Schedule ${scheduleId} not found`);
+    return;
+  }
+  if (schedule.approvalStatus !== ApprovalStatus.APPROVED) {
+    console.warn(`[DeletionExecutor] Schedule "${schedule.name}" is not approved (status=${schedule.approvalStatus}) — aborting live run`);
+    await prisma.deletionRun.update({
+      where: { id: runId },
+      data: { status: "CANCELLED", completedAt: new Date(), cancelledBy: "system:not_approved" },
+    });
+    return;
+  }
+
+  // Verify run is still NOTIFIED (not cancelled during the wait window)
+  const run = await prisma.deletionRun.findUnique({ where: { id: runId } });
+  if (!run || run.status === "CANCELLED") {
+    console.log(`[DeletionExecutor] Run ${runId} was cancelled — skipping`);
+    return;
+  }
+
+  const result = await queryTargetedResources(schedule);
+  if (!result) {
+    await prisma.deletionRun.update({
+      where: { id: runId },
+      data: { status: "FAILED", completedAt: new Date(), failedResources: [{ error: "Cannot load tenant credentials" }] },
+    });
+    return;
+  }
+  const { creds, ordered, skipped, allResources } = result;
+
+  console.log(`[DeletionExecutor] Live run ${runId} — ${ordered.length} targeted, ${skipped.length} skipped`);
+
+  // Update planned snapshot (resources may have changed since notification)
+  await prisma.deletionRun.update({
+    where: { id: runId },
+    data: {
+      status: "EXECUTING",
+      plannedResources: ordered.map((r) => ({
+        id: r.id, name: r.name, type: r.type,
+        location: r.location, resourceGroup: r.resourceGroup,
+      })),
+      skippedResources: skipped.map((r) => ({
+        id: r.id, name: r.name, reason: `tag: ${schedule.excludeTagKey}`,
+      })),
+    },
+  });
+
+  const deleted: { id: string; name: string }[] = [];
+  const failed: { id: string; name: string; error: string }[] = [];
+  const pendingDeletions = [...ordered];
+  const deferredParents: Array<{ resource: AzureResource; retries: number }> = [];
+  const MAX_RETRIES = 3;
 
   try {
-    // ── 1. Query current live resources from Resource Graph ─────────────────
-    const targetIds = schedule.targetIds as string[];
-    const azureSubIds = creds.subscriptions.map((s) => s.subscriptionId);
+    while (pendingDeletions.length > 0) {
+      const resource = pendingDeletions.shift()!;
 
-    const { resources: allResources } = await queryResourceGraph(
-      { azureTenantId: creds.azureTenantId, clientId: creds.clientId, clientSecret: creds.clientSecret },
-      azureSubIds
-    );
-
-    // Filter to scope
-    let targeted = allResources.filter((r) => {
-      if (schedule.scopeType === "RESOURCE_GROUP" || schedule.scopeType === "MULTIPLE_RESOURCE_GROUPS") {
-        return targetIds.some((t) => t.toLowerCase() === r.resourceGroup.toLowerCase());
+      // Re-check cancellation mid-execution
+      const mid = await prisma.deletionRun.findUnique({ where: { id: runId }, select: { status: true } });
+      if (mid?.status === "CANCELLED") {
+        console.log(`[DeletionExecutor] Run ${runId} cancelled mid-execution`);
+        break;
       }
-      if (schedule.scopeType === "SUBSCRIPTION") {
-        return targetIds.includes(r.subscriptionId);
-      }
-      return false;
-    });
 
-    // ── 2. Apply exclude-tag filter ─────────────────────────────────────────
-    const skipped = targeted.filter((r) =>
-      r.tags && Object.keys(r.tags).some((k) => k.toLowerCase() === schedule.excludeTagKey.toLowerCase())
-    );
-    targeted = targeted.filter((r) =>
-      !r.tags || !Object.keys(r.tags).some((k) => k.toLowerCase() === schedule.excludeTagKey.toLowerCase())
-    );
-
-    console.log(`[DeletionExecutor] Run ${run.id}: targeted=${targeted.length} skipped=${skipped.length} (tag: ${schedule.excludeTagKey})`);
-
-    // ── 3. Sort in dependency-safe order ────────────────────────────────────
-    const ordered = sortByDeletionOrder(targeted);
-
-    // ── 4. Save planned_resources snapshot ──────────────────────────────────
-    await prisma.deletionRun.update({
-      where: { id: run.id },
-      data: {
-        plannedResources: ordered.map((r) => ({
-          id: r.id, name: r.name, type: r.type,
-          location: r.location, resourceGroup: r.resourceGroup,
-        })),
-        skippedResources: skipped.map((r) => ({ id: r.id, name: r.name, reason: `tag: ${schedule.excludeTagKey}` })),
-      },
-    });
-
-    // ── 5. DRY RUN — email list and stop ────────────────────────────────────
-    if (isDryRun) {
-      const approvalUrl = `${process.env.NEXTAUTH_URL}/automation?approveSchedule=${scheduleId}`;
-      await sendEmail({
-        to: getNotifyEmails(schedule.notifyEmails),
-        subject: `[DRY RUN] Deletion schedule "${schedule.name}" — ${ordered.length} resources would be deleted`,
-        html: dryRunEmailHtml({
-          scheduleName: schedule.name,
-          tenantName: schedule.tenant.name,
-          resources: ordered,
-          skipped,
-          approvalUrl,
-        }),
-      });
-
-      await prisma.deletionRun.update({
-        where: { id: run.id },
-        data: { status: "DRY_RUN", completedAt: new Date(), notifiedAt: new Date() },
-      });
-
-      console.log(`[DeletionExecutor] Run ${run.id} DRY RUN complete — ${ordered.length} would-be-deleted emailed`);
-      return;
-    }
-
-    // ── 6. LIVE RUN: pre-execution notification ──────────────────────────────
-    const cancelUrl = `${process.env.NEXTAUTH_URL}/api/automation/cancel?token=${cancelToken}`;
-    const execTime = new Date(Date.now() + schedule.notifyBeforeMinutes * 60 * 1000);
-
-    await sendEmail({
-      to: getNotifyEmails(schedule.notifyEmails),
-      subject: `⚠️ Upcoming deletion: "${schedule.name}" — ${ordered.length} resources in ${schedule.notifyBeforeMinutes}min`,
-      html: preExecutionEmailHtml({
-        scheduleName: schedule.name,
-        tenantName: schedule.tenant.name,
-        resources: ordered,
-        execTime,
-        cancelUrl,
-      }),
-    });
-
-    await prisma.deletionRun.update({
-      where: { id: run.id },
-      data: { status: "NOTIFIED", notifiedAt: new Date() },
-    });
-
-    // Wait notify_before_minutes
-    await new Promise((r) => setTimeout(r, schedule.notifyBeforeMinutes * 60 * 1000));
-
-    // ── 7. Check if cancelled ────────────────────────────────────────────────
-    const freshRun = await prisma.deletionRun.findUnique({ where: { id: run.id } });
-    if (freshRun?.status === "CANCELLED") {
-      console.log(`[DeletionExecutor] Run ${run.id} was cancelled before execution`);
-      return;
-    }
-
-    // ── 8. Execute deletions ──────────────────────────────────────────────────
-    await prisma.deletionRun.update({
-      where: { id: run.id },
-      data: { status: "EXECUTING" },
-    });
-
-    const deleted: { id: string; name: string }[] = [];
-    const failed: { id: string; name: string; error: string }[] = [];
-
-    for (const resource of ordered) {
-      // Re-check cancelled flag during execution
-      const mid = await prisma.deletionRun.findUnique({ where: { id: run.id }, select: { status: true } });
-      if (mid?.status === "CANCELLED") break;
-
-      const result = await deleteAzureResource(
+      const delResult = await deleteAzureResource(
         { azureTenantId: creds.azureTenantId, clientId: creds.clientId, clientSecret: creds.clientSecret },
         resource.id,
-        resource.type
+        resource.type,
+        resource.subscriptionId
       );
 
-      if (result.success) {
+      if (delResult.usedPreviewApiVersion) {
+        console.warn(`[DeletionExecutor] ⚠️ ${resource.name} (${resource.type}) used PREVIEW API version ${delResult.apiVersionUsed}`);
+      }
+
+      if (delResult.success) {
         deleted.push({ id: resource.id, name: resource.name });
-        // Mark inactive in DB
         await prisma.resource.updateMany({
           where: { resourceId: resource.id, tenantId: schedule.tenantId },
           data: { isActive: false },
         });
+      } else if (delResult.error && isNestedResourceError(delResult.error)) {
+        const existingDefer = deferredParents.find((d) => d.resource.id === resource.id);
+        if (existingDefer) {
+          existingDefer.retries++;
+          if (existingDefer.retries >= MAX_RETRIES) {
+            failed.push({ id: resource.id, name: resource.name, error: `Max retries exceeded: ${delResult.error}` });
+          } else {
+            pendingDeletions.push(resource);
+          }
+        } else {
+          deferredParents.push({ resource, retries: 0 });
+          const pendingIds = new Set(pendingDeletions.map((r) => r.id));
+          const deletedIds = new Set(deleted.map((d) => d.id));
+          const children = findChildResources(resource, allResources, delResult.error)
+            .filter((c) => !deletedIds.has(c.id) && !pendingIds.has(c.id));
+          if (children.length > 0) {
+            pendingDeletions.unshift(...sortResourcesForDeletion(children));
+          }
+          pendingDeletions.push(resource);
+          console.log(`[DeletionExecutor] Deferred "${resource.name}" — ${children.length} child(ren) inserted ahead`);
+        }
       } else {
-        failed.push({ id: resource.id, name: resource.name, error: result.error ?? "Unknown error" });
-        console.warn(`[DeletionExecutor] Failed to delete ${resource.name}: ${result.error}`);
-        // Continue — don't abort the batch on single failure
+        failed.push({ id: resource.id, name: resource.name, error: delResult.error ?? "Unknown error" });
+        console.warn(`[DeletionExecutor] Failed to delete ${resource.name}: ${delResult.error}`);
       }
     }
 
-    const finalStatus = failed.length === ordered.length ? "FAILED"
-      : failed.length > 0 ? "COMPLETED"   // partial success still = COMPLETED with failures noted
-      : "COMPLETED";
+    const finalStatus = failed.length === ordered.length && ordered.length > 0 ? "FAILED" : "COMPLETED";
 
     await prisma.deletionRun.update({
-      where: { id: run.id },
-      data: {
-        status: finalStatus,
-        deletedResources: deleted,
-        failedResources: failed,
-        completedAt: new Date(),
-      },
+      where: { id: runId },
+      data: { status: finalStatus, deletedResources: deleted, failedResources: failed, completedAt: new Date() },
     });
 
-    // ── 9. Completion summary email ────────────────────────────────────────
     await sendEmail({
       to: getNotifyEmails(schedule.notifyEmails),
       subject: `✅ Deletion complete: "${schedule.name}" — ${deleted.length} deleted, ${failed.length} failed`,
       html: completionEmailHtml({ scheduleName: schedule.name, tenantName: schedule.tenant.name, deleted, failed }),
     });
 
-    // Audit log
     await prisma.auditLog.create({
       data: {
         userId: schedule.createdById,
         action: "RUN_DELETION_SCHEDULE",
         resourceType: "deletion_schedule_run",
-        resourceId: run.id,
+        resourceId: runId,
         metadata: { scheduleId, deleted: deleted.length, failed: failed.length, skipped: skipped.length },
       },
     });
 
-    console.log(`[DeletionExecutor] Run ${run.id} COMPLETE — deleted=${deleted.length} failed=${failed.length}`);
+    console.log(`[DeletionExecutor] Live run ${runId} COMPLETE — deleted=${deleted.length} failed=${failed.length}`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[DeletionExecutor] Run ${run.id} FATAL ERROR:`, message);
+    console.error(`[DeletionExecutor] Run ${runId} FATAL ERROR:`, message);
     await prisma.deletionRun.update({
-      where: { id: run.id },
+      where: { id: runId },
       data: { status: "FAILED", completedAt: new Date(), failedResources: [{ error: message }] },
-    });
+    }).catch(() => {});
   }
 }
 
-// ─── Dynamic scheduler ────────────────────────────────────────────────────────
+/**
+ * Manual trigger — respects approvalStatus.
+ * If PENDING_DRY_RUN or AWAITING_APPROVAL → runs dry run.
+ * If APPROVED → creates a NOTIFIED run and fires immediately (no wait window).
+ * Used by "Run Now" button only — not called by the poller.
+ */
+export async function executeScheduleRun(scheduleId: string): Promise<void> {
+  const schedule = await prisma.deletionSchedule.findUnique({ where: { id: scheduleId } });
+  if (!schedule || !schedule.isEnabled) return;
 
-export async function refreshDeletionSchedulers(): Promise<void> {
-  // Stop all existing tasks
-  for (const [id, task] of activeTasks) {
-    task.stop();
-    activeTasks.delete(id);
-    console.log(`[DeletionScheduler] Stopped task ${id}`);
+  if (schedule.approvalStatus !== ApprovalStatus.APPROVED) {
+    // Treat as dry run
+    await executeDryRun(scheduleId);
+    if (schedule.approvalStatus === ApprovalStatus.PENDING_DRY_RUN) {
+      await prisma.deletionSchedule.update({
+        where: { id: scheduleId },
+        data: { approvalStatus: ApprovalStatus.AWAITING_APPROVAL },
+      });
+    }
+    return;
   }
 
-  // Load all enabled schedules
-  const schedules = await prisma.deletionSchedule.findMany({
-    where: { isEnabled: true },
+  // APPROVED: create a run and execute immediately (manual override skips notify window)
+  const cancelToken = randomBytes(16).toString("hex");
+  const run = await prisma.deletionRun.create({
+    data: {
+      scheduleId,
+      status: "NOTIFIED",
+      cancelToken,
+      notifiedAt: new Date(),
+      scheduledExecutionAt: new Date(), // execute immediately
+    },
   });
 
-  for (const schedule of schedules) {
-    // Support multi-line cron (multiple run times per day)
-    const cronLines = schedule.cronExpression.split("\n").filter(Boolean);
-
-    for (const cronLine of cronLines) {
-      const taskKey = `${schedule.id}::${cronLine}`;
-
-      if (!cron.validate(cronLine)) {
-        console.warn(`[DeletionScheduler] Invalid cron for schedule "${schedule.name}": ${cronLine}`);
-        continue;
-      }
-
-      const task = cron.schedule(cronLine, () => {
-        executeScheduleRun(schedule.id).catch((e) =>
-          console.error(`[DeletionScheduler] Uncaught error in schedule ${schedule.id}:`, e)
-        );
-      }, { timezone: "UTC" });
-
-      activeTasks.set(taskKey, task);
-      console.log(`[DeletionScheduler] Registered schedule "${schedule.name}" at cron: ${cronLine}`);
-    }
-  }
+  await executeLiveRun(scheduleId, run.id);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -302,42 +420,51 @@ function getNotifyEmails(override: string): string {
   return addresses.join(",") || base;
 }
 
+function formatIST(date: Date): string {
+  return date.toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    weekday: "short", year: "numeric", month: "short",
+    day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  }) + " IST";
+}
+
 function dryRunEmailHtml(p: {
   scheduleName: string; tenantName: string;
   resources: { name: string; type: string; resourceGroup: string }[];
   skipped: { name: string }[];
-  approvalUrl: string;
+  approveUrl: string;
+  cronDescription: string;
 }): string {
   return `<div style="font-family:sans-serif;max-width:700px">
-    <h2 style="color:#f59e0b">🔍 Dry Run: "${p.scheduleName}"</h2>
+    <h2 style="color:#f59e0b">🔍 Dry Run Complete: "${p.scheduleName}"</h2>
     <p>Tenant: <strong>${p.tenantName}</strong></p>
-    <p>This is a <strong>DRY RUN</strong> — no resources were deleted. The following ${p.resources.length} resources would be deleted on the next live run:</p>
+    <p>This is a <strong>DRY RUN</strong> — no resources were deleted. The following
+       <strong>${p.resources.length}</strong> resources <em>would</em> be deleted on each live run:</p>
     <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <tr style="background:#f3f4f6"><th style="padding:6px;text-align:left">Name</th><th style="padding:6px;text-align:left">Type</th><th style="padding:6px;text-align:left">Resource Group</th></tr>
-      ${p.resources.map((r) => `<tr><td style="padding:6px;border-bottom:1px solid #e5e7eb">${r.name}</td><td style="padding:6px;border-bottom:1px solid #e5e7eb">${r.type.split("/").pop()}</td><td style="padding:6px;border-bottom:1px solid #e5e7eb">${r.resourceGroup}</td></tr>`).join("")}
+      <tr style="background:#f3f4f6">
+        <th style="padding:6px;text-align:left">Name</th>
+        <th style="padding:6px;text-align:left">Type</th>
+        <th style="padding:6px;text-align:left">Resource Group</th>
+      </tr>
+      ${p.resources.map((r) => `<tr>
+        <td style="padding:6px;border-bottom:1px solid #e5e7eb">${r.name}</td>
+        <td style="padding:6px;border-bottom:1px solid #e5e7eb">${r.type.split("/").pop()}</td>
+        <td style="padding:6px;border-bottom:1px solid #e5e7eb">${r.resourceGroup}</td>
+      </tr>`).join("")}
     </table>
-    ${p.skipped.length ? `<p style="color:#6b7280">Skipped (exclude tag): ${p.skipped.map((s) => s.name).join(", ")}</p>` : ""}
-    <p>To activate live deletions, an Admin must approve this schedule:</p>
-    <a href="${p.approvalUrl}" style="display:inline-block;background:#2563eb;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;margin-top:8px">Approve Live Deletions</a>
-    <p style="color:#ef4444;font-size:12px;margin-top:16px">⚠️ Once approved, this schedule will permanently delete real Azure resources on the configured schedule.</p>
-  </div>`;
-}
-
-function preExecutionEmailHtml(p: {
-  scheduleName: string; tenantName: string;
-  resources: { name: string; type: string; resourceGroup: string }[];
-  execTime: Date; cancelUrl: string;
-}): string {
-  return `<div style="font-family:sans-serif;max-width:700px">
-    <h2 style="color:#ef4444">⚠️ Upcoming Deletion: "${p.scheduleName}"</h2>
-    <p>Tenant: <strong>${p.tenantName}</strong></p>
-    <p>The following <strong>${p.resources.length} resources will be deleted</strong> at ${p.execTime.toUTCString()}:</p>
-    <table style="width:100%;border-collapse:collapse;font-size:13px">
-      <tr style="background:#f3f4f6"><th style="padding:6px;text-align:left">Name</th><th style="padding:6px;text-align:left">Type</th><th style="padding:6px;text-align:left">Resource Group</th></tr>
-      ${p.resources.map((r) => `<tr><td style="padding:6px;border-bottom:1px solid #e5e7eb">${r.name}</td><td style="padding:6px;border-bottom:1px solid #e5e7eb">${r.type.split("/").pop()}</td><td style="padding:6px;border-bottom:1px solid #e5e7eb">${r.resourceGroup}</td></tr>`).join("")}
-    </table>
-    <a href="${p.cancelUrl}" style="display:inline-block;background:#dc2626;color:white;padding:10px 20px;border-radius:6px;text-decoration:none;margin-top:16px">Cancel This Run</a>
-    <p style="color:#6b7280;font-size:12px">This cancel link is valid until execution starts.</p>
+    ${p.skipped.length ? `<p style="color:#6b7280;margin-top:8px">Skipped (exclude tag): ${p.skipped.map((s) => s.name).join(", ")}</p>` : ""}
+    <hr style="margin:20px 0;border:none;border-top:1px solid #e5e7eb"/>
+    <p><strong>One click to approve live deletions:</strong></p>
+    <p>Once approved, this schedule will run automatically per its configured time.
+       You will receive a notification email before each run with a Cancel option.</p>
+    <a href="${p.approveUrl}" style="display:inline-block;background:#16a34a;color:white;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600;font-size:15px">
+      ✓ Approve Live Deletions
+    </a>
+    <p style="color:#ef4444;font-size:12px;margin-top:16px">
+      ⚠️ Once approved, this schedule will permanently delete real Azure resources on the configured schedule.
+      This link expires in 7 days.
+    </p>
   </div>`;
 }
 
@@ -348,15 +475,9 @@ function completionEmailHtml(p: {
   return `<div style="font-family:sans-serif;max-width:700px">
     <h2>✅ Deletion Complete: "${p.scheduleName}"</h2>
     <p>Tenant: <strong>${p.tenantName}</strong></p>
-    <p><strong>${p.deleted.length}</strong> deleted &nbsp;|&nbsp; <strong style="color:${p.failed.length > 0 ? "#ef4444" : "#6b7280"}">${p.failed.length}</strong> failed</p>
+    <p><strong>${p.deleted.length}</strong> deleted &nbsp;|&nbsp;
+       <strong style="color:${p.failed.length > 0 ? "#ef4444" : "#6b7280"}">${p.failed.length}</strong> failed</p>
     ${p.failed.length > 0 ? `<h3 style="color:#ef4444">Failures</h3>
     <ul>${p.failed.map((f) => `<li><strong>${f.name}</strong>: ${f.error}</li>`).join("")}</ul>` : ""}
   </div>`;
-}
-
-// Re-export a cryptographically secure token generator using Node's crypto module
-function nanoid(len: number): string {
-  const { randomBytes } = require("crypto") as typeof import("crypto");
-  // Each byte becomes 2 hex chars; generate enough bytes to cover len chars
-  return randomBytes(Math.ceil(len / 2)).toString("hex").slice(0, len);
 }

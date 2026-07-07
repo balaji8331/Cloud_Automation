@@ -144,6 +144,7 @@ model CostRecord {
 
   @@index([tenantId, date])
   @@index([subscriptionId, date])
+  @@index([tenantId, subscriptionId, resourceGroup])
   @@index([date])
   @@map("cost_records")
 }
@@ -281,6 +282,13 @@ enum DeletionScopeType {
   MULTIPLE_RESOURCE_GROUPS
 }
 
+enum ApprovalStatus {
+  PENDING_DRY_RUN    // created, dry run not yet done
+  AWAITING_APPROVAL  // dry run done, waiting for admin to click Approve
+  APPROVED           // approved — will execute on schedule automatically
+  DISABLED           // schedule disabled by admin
+}
+
 enum DeletionRunStatus {
   DRY_RUN
   NOTIFIED
@@ -350,48 +358,99 @@ model Resource {
 // ─────────────────────────────────────────────
 
 model DeletionSchedule {
-  id                    String            @id @default(cuid())
+  id                    String              @id @default(cuid())
   tenantId              String
   name                  String
   scopeType             DeletionScopeType
-  targetIds             Json              // array of RG names or subscription IDs
+  targetIds             Json                // array of RG names or subscription IDs
   cronExpression        String
-  isEnabled             Boolean           @default(false)  // disabled until first dry-run approved
-  liveDeletesApproved   Boolean           @default(false)  // must be true for real deletes to fire
-  excludeTagKey         String            @default("donotdelete")
-  notifyBeforeMinutes   Int               @default(60)
-  notifyEmails          String            @default("")     // comma-separated override list
+  isEnabled             Boolean             @default(true)
+  approvalStatus        ApprovalStatus      @default(PENDING_DRY_RUN)
+  approveToken          String?             @unique  // short-lived token for email approve link
+  approveTokenExpiresAt DateTime?
+  excludeTagKey         String              @default("donotdelete")
+  notifyBeforeMinutes   Int                 @default(60)
+  notifyEmails          String              @default("")     // comma-separated override list
   createdById           String
-  createdAt             DateTime          @default(now())
-  updatedAt             DateTime          @updatedAt
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
 
-  tenant                Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdBy             User              @relation(fields: [createdById], references: [id])
+  tenant                Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy             User                @relation(fields: [createdById], references: [id])
   runs                  DeletionRun[]
 
   @@index([tenantId])
+  @@index([approvalStatus, isEnabled])
   @@map("deletion_schedules")
 }
 
 model DeletionRun {
-  id                String            @id @default(cuid())
-  scheduleId        String
-  status            DeletionRunStatus @default(DRY_RUN)
-  plannedResources  Json?             // snapshot of resources targeted
-  deletedResources  Json?             // successfully deleted
-  failedResources   Json?             // { resourceId, error } per failure
-  skippedResources  Json?             // skipped due to exclude tag
-  startedAt         DateTime          @default(now())
-  completedAt       DateTime?
-  cancelledBy       String?           // userId if cancelled
-  cancelToken       String?           @unique  // short token for cancel link in email
-  notifiedAt        DateTime?
+  id                    String            @id @default(cuid())
+  scheduleId            String
+  status                DeletionRunStatus @default(DRY_RUN)
+  plannedResources      Json?
+  deletedResources      Json?
+  failedResources       Json?
+  skippedResources      Json?
+  startedAt             DateTime          @default(now())
+  completedAt           DateTime?
+  cancelledBy           String?
+  cancelToken           String?           @unique
+  notifiedAt            DateTime?
+  scheduledExecutionAt  DateTime?         // when the actual delete fires (set when status=NOTIFIED)
 
-  schedule          DeletionSchedule  @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  schedule              DeletionSchedule  @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
 
   @@index([scheduleId, startedAt])
+  @@index([status, scheduledExecutionAt])
   @@map("deletion_runs")
 }
 
 // ─── Add deletionSchedules relation to User ───────────────────────────────────
 // (handled via DeletionSchedule.createdBy FK above)
+// ─────────────────────────────────────────────
+// UNIFIED JOB QUEUE
+// ─────────────────────────────────────────────
+
+enum JobType {
+  COST_INGESTION
+  RESOURCE_SYNC
+  DELETION_EXECUTION
+  ANOMALY_DETECTION
+  BUDGET_ALERT_CHECK
+}
+
+enum JobPriority {
+  SCHEDULED
+  IMMEDIATE
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model JobQueue {
+  id            String      @id @default(cuid())
+  jobType       JobType     @map("job_type")
+  tenantId      String?     @map("tenant_id")
+  referenceId   String?     @map("reference_id")
+  payload       Json?       // Job specific parameters
+  priority      JobPriority @default(SCHEDULED)
+  status        JobStatus   @default(PENDING)
+  attempts      Int         @default(0)
+  maxAttempts   Int         @default(3) @map("max_attempts")
+  errorMessage  String?     @map("error_message")
+  createdBy     String?     @map("created_by") // User ID if manually triggered
+  scheduledFor  DateTime    @default(now()) @map("scheduled_for")
+  startedAt     DateTime?   @map("started_at")
+  completedAt   DateTime?   @map("completed_at")
+  createdAt     DateTime    @default(now()) @map("created_at")
+
+  @@index([status, scheduledFor, priority])
+  @@index([tenantId, status])
+  @@map("job_queue")
+}

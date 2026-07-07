@@ -113,7 +113,11 @@ export function AzureDeleteDialog({
             onKeyDown={(e) => e.key === "Enter" && matches && handleConfirm()}
           />
           {error && (
-            <p className="text-sm text-red-600 bg-red-50 rounded p-2">{error}</p>
+            <div className="text-sm text-red-600 bg-red-50 rounded p-2 space-y-1">
+              {error.split(". ").map((line, i) => (
+                <p key={i}>{line}{i < error.split(". ").length - 1 ? "." : ""}</p>
+              ))}
+            </div>
           )}
         </div>
 

@@ -208,6 +208,15 @@ export default function ResourcesPage() {
       body: JSON.stringify({ confirmName: name }),
     });
     const data = await res.json();
+
+    // Handle nested-resource conflicts (409)
+    if (res.status === 409 && data.nestedChildren) {
+      const childList = data.nestedChildren.map((c: { name: string }) => c.name).join(", ");
+      throw new Error(
+        `${data.error} ${childList}. Delete child resources first, then retry.`
+      );
+    }
+
     if (!res.ok) throw new Error(data.error ?? "Delete failed");
     toast({ variant: "success", title: data.async ? "Delete in progress" : "Deleted from Azure", description: data.message });
     if (type === "resource group") fetchGroups();

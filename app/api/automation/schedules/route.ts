@@ -1,12 +1,15 @@
 /**
  * GET  /api/automation/schedules   — list all schedules
  * POST /api/automation/schedules   — create a schedule
+ *
+ * On create: approvalStatus = PENDING_DRY_RUN.
+ * The AutomationPoller will auto-trigger a dry run within ~60s.
  */
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireRole, AuthError } from "@/lib/auth/guards";
 import prisma from "@/lib/db";
-import { refreshDeletionSchedulers } from "@/jobs/deletionExecutor";
+import { ApprovalStatus } from "@prisma/client";
 
 const CreateSchema = z.object({
   tenantId: z.string(),
@@ -29,7 +32,11 @@ export async function GET() {
         runs: {
           orderBy: { startedAt: "desc" },
           take: 1,
-          select: { status: true, startedAt: true, plannedResources: true, deletedResources: true },
+          select: {
+            id: true, status: true, startedAt: true,
+            plannedResources: true, deletedResources: true,
+            scheduledExecutionAt: true, notifiedAt: true,
+          },
         },
       },
       orderBy: { createdAt: "desc" },
@@ -52,13 +59,11 @@ export async function POST(req: Request) {
       data: {
         ...parsed.data,
         createdById: session.user.id,
-        isEnabled: true,           // enabled from creation
-        liveDeletesApproved: false, // always starts with live deletes disabled
+        isEnabled: true,
+        // Start in PENDING_DRY_RUN — poller will trigger dry run automatically
+        approvalStatus: ApprovalStatus.PENDING_DRY_RUN,
       },
     });
-
-    // Refresh cron registry
-    await refreshDeletionSchedulers();
 
     return NextResponse.json(schedule, { status: 201 });
   } catch (err) {

@@ -55,6 +55,17 @@ export function toUsd(amount: number, currency: string): number {
   return amount / rate;
 }
 
+export function fromUsd(amountUsd: number, currency: string): number {
+  if (!currency || currency.toUpperCase() === "USD") return amountUsd;
+
+  const rates = getRates();
+  const rate = rates.get(currency.toUpperCase());
+
+  if (!rate) return amountUsd; // fallback to USD if rate unknown
+  
+  return amountUsd * rate;
+}
+
 /** Invalidate cache (call after env reload in tests) */
 export function clearRateCache(): void {
   rateCache = null;

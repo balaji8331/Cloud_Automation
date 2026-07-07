@@ -1,55 +1,84 @@
 /**
  * Daily scheduler — runs at 02:00 UTC via node-cron.
+ * Also starts the unified job queue worker.
  * Import this file in a custom Next.js server (server.ts) or a standalone Node process.
  *
  * Usage: import "@/jobs/scheduler" in your server entry point.
  */
 import cron from "node-cron";
-import { ingestAllTenants } from "./ingest";
-import { checkBudgetAlerts } from "./budgetAlerts";
-import { detectAnomalies } from "./anomaly";
-import { syncAllTenantsResources } from "./syncResources";
-import { syncAllAzureBudgetsJob } from "./syncBudgets";
-import { refreshDeletionSchedulers } from "./deletionExecutor";
+import prisma from "@/lib/db";
+import { JobType, JobPriority } from "@prisma/client";
+import { startWorker } from "./queueWorker";
+import { startAutomationPoller } from "./automationPoller";
 
 // Daily at 02:00 UTC
 const CRON_SCHEDULE = process.env.INGEST_CRON ?? "0 2 * * *";
 
 let scheduled = false;
+const SCHEDULER_STARTED_KEY = Symbol.for("scheduler.started");
 
 export function startScheduler(): void {
-  if (scheduled) return;
+  const g = global as typeof global & { [key: symbol]: boolean };
+  if (g[SCHEDULER_STARTED_KEY]) {
+    console.log("[Scheduler] Already running — skipping duplicate start");
+    return;
+  }
+  g[SCHEDULER_STARTED_KEY] = true;
   scheduled = true;
 
+  // Start the unified queue worker
+  startWorker();
+
   cron.schedule(CRON_SCHEDULE, async () => {
-    console.log(`[Scheduler] Starting daily ingestion — ${new Date().toISOString()}`);
+    console.log(`[Scheduler] Queueing daily jobs — ${new Date().toISOString()}`);
 
     try {
-      const results = await ingestAllTenants(30);
-      const ok = results.filter((r) => r.success).length;
-      const fail = results.filter((r) => !r.success).length;
-      console.log(`[Scheduler] Ingestion complete — ${ok} ok, ${fail} failed`);
+      const tenants = await prisma.tenant.findMany({ select: { id: true } });
 
-      await checkBudgetAlerts();
-      console.log("[Scheduler] Budget alerts checked");
+      // 1. Enqueue COST_INGESTION per tenant
+      for (const t of tenants) {
+        await prisma.jobQueue.create({
+          data: {
+            jobType: JobType.COST_INGESTION,
+            tenantId: t.id,
+            priority: JobPriority.SCHEDULED,
+            payload: { days: 30 }
+          }
+        });
+      }
 
-      await detectAnomalies();
-      console.log("[Scheduler] Anomaly detection complete");
+      // 2. Enqueue BUDGET_ALERT_CHECK
+      await prisma.jobQueue.create({
+        data: {
+          jobType: JobType.BUDGET_ALERT_CHECK,
+          priority: JobPriority.SCHEDULED,
+        }
+      });
 
-      await syncAllTenantsResources();
-      console.log("[Scheduler] Resource inventory sync complete");
+      // 3. Enqueue ANOMALY_DETECTION
+      await prisma.jobQueue.create({
+        data: {
+          jobType: JobType.ANOMALY_DETECTION,
+          priority: JobPriority.SCHEDULED,
+        }
+      });
 
-      await syncAllAzureBudgetsJob();
-      console.log("[Scheduler] Azure-native budget sync complete");
+      // 4. Enqueue RESOURCE_SYNC (global)
+      await prisma.jobQueue.create({
+        data: {
+          jobType: JobType.RESOURCE_SYNC,
+          priority: JobPriority.SCHEDULED,
+        }
+      });
+
+      console.log(`[Scheduler] Daily jobs successfully queued.`);
     } catch (err) {
-      console.error("[Scheduler] Job failed:", err);
+      console.error("[Scheduler] Failed to queue daily jobs:", err);
     }
   });
 
   console.log(`[Scheduler] Daily ingestion scheduled: ${CRON_SCHEDULE}`);
 
-  // Load deletion schedules dynamically on startup
-  refreshDeletionSchedulers().catch((e) =>
-    console.error("[Scheduler] Failed to init deletion schedulers:", e)
-  );
+  // Start the automation lifecycle poller (dry runs, notifications, executions)
+  startAutomationPoller();
 }

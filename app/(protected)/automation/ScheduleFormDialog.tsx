@@ -19,11 +19,38 @@ interface DeletionScheduleInput {
 interface Subscription { id: string; subscriptionId: string; subscriptionName: string | null; }
 interface ResourceGroup { id: string; name: string; subscriptionName: string; }
 
-// A "run time" entry — hour + minute pair
+// A "run time" entry — hour + minute pair (always in IST for the UI)
 interface RunTime { hour: string; minute: string; }
 
-/** Convert multiple run times + frequency into a cron expression.
- *  Multiple times = comma-separated hours: "0 18,23 * * *"
+// IST is UTC+5:30
+const IST_OFFSET_MINUTES = 5 * 60 + 30;
+
+/** Convert IST hour+minute to UTC hour+minute, handling day wrap. */
+function istToUtc(hour: number, minute: number): { hour: number; minute: number } {
+  const totalMinutesIST = hour * 60 + minute;
+  let totalMinutesUTC = totalMinutesIST - IST_OFFSET_MINUTES;
+  // Wrap around midnight
+  totalMinutesUTC = ((totalMinutesUTC % (24 * 60)) + 24 * 60) % (24 * 60);
+  return {
+    hour: Math.floor(totalMinutesUTC / 60),
+    minute: totalMinutesUTC % 60,
+  };
+}
+
+/** Convert UTC hour+minute to IST hour+minute. */
+function utcToIst(hour: number, minute: number): { hour: number; minute: number } {
+  const totalMinutesUTC = hour * 60 + minute;
+  let totalMinutesIST = totalMinutesUTC + IST_OFFSET_MINUTES;
+  totalMinutesIST = totalMinutesIST % (24 * 60);
+  return {
+    hour: Math.floor(totalMinutesIST / 60),
+    minute: totalMinutesIST % 60,
+  };
+}
+
+/**
+ * Build a UTC cron expression from IST run times.
+ * The UI collects times in IST; this converts to UTC before storing.
  */
 function buildCron(freq: string, times: RunTime[], weekday: string): string {
   if (freq === "hourly") return "0 * * * *";
@@ -32,28 +59,59 @@ function buildCron(freq: string, times: RunTime[], weekday: string): string {
     arr.findIndex((x) => x.hour === t.hour && x.minute === t.minute) === i
   );
 
-  if (unique.length === 1) {
-    const { hour, minute } = unique[0];
+  // Convert each IST time to UTC
+  const utcTimes = unique.map((t) => {
+    const { hour, minute } = istToUtc(Number(t.hour), Number(t.minute));
+    return { hour: String(hour), minute: String(minute) };
+  });
+
+  if (utcTimes.length === 1) {
+    const { hour, minute } = utcTimes[0];
     if (freq === "daily") return `${minute} ${hour} * * *`;
     if (freq === "weekly") return `${minute} ${hour} * * ${weekday}`;
   }
 
-  // Multiple times — group by minute if same, otherwise use separate expressions
-  // Standard approach: "0 18,23 * * *" when minute is the same
-  const sameMinute = unique.every((t) => t.minute === unique[0].minute);
+  const sameMinute = utcTimes.every((t) => t.minute === utcTimes[0].minute);
   if (sameMinute) {
-    const hours = unique.map((t) => t.hour).join(",");
-    if (freq === "daily") return `${unique[0].minute} ${hours} * * *`;
-    if (freq === "weekly") return `${unique[0].minute} ${hours} * * ${weekday}`;
+    const hours = utcTimes.map((t) => t.hour).join(",");
+    if (freq === "daily") return `${utcTimes[0].minute} ${hours} * * *`;
+    if (freq === "weekly") return `${utcTimes[0].minute} ${hours} * * ${weekday}`;
   }
 
-  // Different minutes — use separate cron expressions joined by newline
-  // (we store as comma-separated in DB, executor splits and registers each)
-  return unique
+  return utcTimes
     .map((t) => freq === "weekly"
       ? `${t.minute} ${t.hour} * * ${weekday}`
       : `${t.minute} ${t.hour} * * *`)
     .join("\n");
+}
+
+/** Parse a stored UTC cron back to IST for display in the form. */
+function parseCronToIst(cronExpression: string): RunTime[] {
+  const lines = cronExpression.split("\n").filter(Boolean);
+  return lines.map((line) => {
+    const parts = line.split(" ");
+    const utcMinute = Number(parts[0] ?? "0");
+    const utcHour = Number(parts[1]?.split(",")[0] ?? "0");
+    const ist = utcToIst(utcHour, utcMinute);
+    return { hour: String(ist.hour), minute: String(ist.minute) };
+  });
+}
+
+/** Show IST time preview for the cron expression. */
+function cronPreviewIST(cronExpression: string): string {
+  const lines = cronExpression.split("\n").filter(Boolean);
+  return lines.map((line) => {
+    const parts = line.split(" ");
+    const utcMinute = Number(parts[0] ?? "0");
+    // Handle comma-separated hours (multiple times same minute)
+    const hourStr = parts[1] ?? "0";
+    const utcHours = hourStr.split(",").map(Number);
+    const istTimes = utcHours.map((h) => {
+      const ist = utcToIst(h, utcMinute);
+      return `${String(ist.hour).padStart(2, "0")}:${String(ist.minute).padStart(2, "0")}`;
+    });
+    return istTimes.join(", ") + " IST";
+  }).join(" | ");
 }
 
 export function ScheduleFormDialog({ open, schedule, tenants, onClose, onSaved }: {
@@ -92,19 +150,15 @@ export function ScheduleFormDialog({ open, schedule, tenants, onClose, onSaved }
       setExcludeTagKey(schedule.excludeTagKey);
       setNotifyMinutes(String(schedule.notifyBeforeMinutes));
       setNotifyEmails(schedule.notifyEmails ?? "");
-      // Parse existing cron back to times
-      const lines = schedule.cronExpression.split("\n").filter(Boolean);
-      const parsed: RunTime[] = lines.map((line) => {
-        const parts = line.split(" ");
-        return { minute: parts[0] ?? "0", hour: parts[1]?.split(",")[0] ?? "23" };
-      });
-      setRunTimes(parsed.length ? parsed : [{ hour: "23", minute: "0" }]);
+      // Parse existing UTC cron back to IST for display
+      const parsed = parseCronToIst(schedule.cronExpression);
+      setRunTimes(parsed.length ? parsed : [{ hour: "22", minute: "0" }]);
     } else {
       setTenantId(tenants[0]?.id ?? "");
       setName(""); setScopeType("RESOURCE_GROUP");
       setSelectedTargets([]); setExcludeTagKey("donotdelete");
       setNotifyMinutes("60"); setNotifyEmails("");
-      setRunTimes([{ hour: "23", minute: "0" }]);
+      setRunTimes([{ hour: "7", minute: "30" }]); // default 7:30 AM IST
       setFreq("daily"); setWeekday("1");
     }
   }, [schedule, open, tenants]);
@@ -151,13 +205,31 @@ export function ScheduleFormDialog({ open, schedule, tenants, onClose, onSaved }
       return;
     }
     setSaving(true);
-    const body = {
-      tenantId, name, scopeType, targetIds: selectedTargets,
+
+    // For edits, only send scope/targets if they actually changed.
+    // This avoids triggering an unnecessary PENDING_DRY_RUN reset.
+    const scopeChanged = isEdit && (
+      scopeType !== schedule!.scopeType ||
+      selectedTargets.length !== schedule!.targetIds.length ||
+      selectedTargets.some((t) => !schedule!.targetIds.includes(t)) ||
+      schedule!.targetIds.some((t) => !selectedTargets.includes(t))
+    );
+
+    const body: Record<string, unknown> = {
+      tenantId,   // always send — user can switch tenants on edit
+      name,
       cronExpression,
       excludeTagKey,
       notifyBeforeMinutes: Number(notifyMinutes),
       notifyEmails,
     };
+
+    // Always include scope/targets for new schedules.
+    // For edits: only include if actually changed (prevents spurious approval resets).
+    if (!isEdit || scopeChanged) {
+      body.scopeType = scopeType;
+      body.targetIds = selectedTargets;
+    }
     const url = isEdit ? `/api/automation/schedules/${schedule!.id}` : "/api/automation/schedules";
     const method = isEdit ? "PATCH" : "POST";
     try {
@@ -289,13 +361,13 @@ export function ScheduleFormDialog({ open, schedule, tenants, onClose, onSaved }
             {freq !== "hourly" && (
               <div className="space-y-2">
                 <label className="text-xs text-gray-500 block">
-                  Run time(s) — add multiple for e.g. 6 PM and 11 PM
+                  Run time(s) IST — add multiple for e.g. 6 PM and 11 PM
                 </label>
                 {runTimes.map((t, i) => (
                   <div key={i} className="flex items-center gap-2">
                     <div className="flex items-center gap-1.5 flex-1">
                       <div className="flex-1">
-                        <label className="text-[10px] text-gray-400 block mb-0.5">Hour (UTC 0–23)</label>
+                        <label className="text-[10px] text-gray-400 block mb-0.5">Hour IST (0–23)</label>
                         <input
                           type="number" min="0" max="23" value={t.hour}
                           onChange={(e) => updateRunTime(i, "hour", e.target.value)}
@@ -333,18 +405,16 @@ export function ScheduleFormDialog({ open, schedule, tenants, onClose, onSaved }
               </div>
             )}
 
-            {/* Cron preview */}
-            <div className="bg-gray-50 rounded p-2">
-              <p className="text-xs text-gray-400">
-                Cron expression{cronExpression.includes("\n") ? "s" : ""}:
+            {/* Cron preview — shows IST time to confirm what user entered */}
+            <div className="bg-gray-50 rounded p-2 space-y-1">
+              <p className="text-xs text-gray-500 font-medium">
+                Runs at: <span className="text-gray-800">{cronPreviewIST(cronExpression)}</span>
               </p>
-              {cronExpression.split("\n").map((expr, i) => (
-                <code key={i} className="block text-xs text-gray-600 mt-0.5">
-                  {expr}
-                </code>
-              ))}
+              <p className="text-[10px] text-gray-400">
+                Stored as UTC: <code className="text-gray-500">{cronExpression.split("\n").join(" | ")}</code>
+              </p>
               {runTimes.length > 1 && (
-                <p className="text-[10px] text-gray-400 mt-1">
+                <p className="text-[10px] text-gray-400">
                   {runTimes.length} runs per {freq === "weekly" ? "week" : "day"}
                 </p>
               )}

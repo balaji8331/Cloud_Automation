@@ -39,6 +39,13 @@ export interface TenantCostSummary {
   currency: string;
 }
 
+export interface SubscriptionCostSummary {
+  subscriptionId: string;
+  subscriptionName: string;
+  totalCost: number;
+  currency: string;
+}
+
 export interface ServiceCostSummary {
   serviceName: string;
   totalCost: number;
@@ -88,13 +95,15 @@ export async function upsertCostRecords(
 
 // ─── Read ─────────────────────────────────────────────────────────────────────
 
-/** Total combined cost for all tenants in a date range — in USD */
-export async function getTotalCost(from: Date, to: Date): Promise<number> {
+/** Total cost in a date range for a given scope — in USD */
+export async function getTotalCost(params: CostQueryParams): Promise<number> {
+  const where = buildWhere(params);
+
   // COALESCE: use normalizedCostUsd when it has been populated (> 0), otherwise fall back to raw cost
   // This handles records ingested before the currency normalization migration
   const result = await prisma.costRecord.aggregate({
     _sum: { normalizedCostUsd: true, cost: true },
-    where: { date: { gte: from, lte: to } },
+    where,
   });
   const normalized = Number(result._sum?.normalizedCostUsd ?? 0);
   const raw = Number(result._sum?.cost ?? 0);
@@ -144,6 +153,41 @@ export async function getCostByTenant(
     return {
       tenantId: r.tenantId,
       tenantName: nameMap.get(r.tenantId) ?? r.tenantId,
+      totalCost: normalized > 0 ? normalized : raw,
+      currency: "USD",
+    };
+  });
+}
+
+/** Cost per subscription within a tenant — in USD */
+export async function getCostBySubscription(
+  tenantId: string,
+  from: Date,
+  to: Date
+): Promise<SubscriptionCostSummary[]> {
+  const rows = await prisma.costRecord.groupBy({
+    by: ["subscriptionId"],
+    where: { tenantId, date: { gte: from, lte: to } },
+    _sum: { normalizedCostUsd: true, cost: true },
+    orderBy: { subscriptionId: "asc" },
+  });
+
+  const subscriptions = await prisma.subscription.findMany({ 
+    where: { tenantId },
+    select: { id: true, subscriptionName: true, subscriptionId: true } 
+  });
+  
+  const nameMap = new Map(subscriptions.map((s) => [
+    s.id, 
+    s.subscriptionName ?? s.subscriptionId
+  ]));
+
+  return rows.map((r) => {
+    const normalized = Number(r._sum?.normalizedCostUsd ?? 0);
+    const raw = Number(r._sum?.cost ?? 0);
+    return {
+      subscriptionId: r.subscriptionId,
+      subscriptionName: nameMap.get(r.subscriptionId) ?? r.subscriptionId,
       totalCost: normalized > 0 ? normalized : raw,
       currency: "USD",
     };

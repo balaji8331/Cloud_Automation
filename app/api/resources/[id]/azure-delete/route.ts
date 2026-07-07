@@ -4,6 +4,7 @@
  * Deletes a REAL Azure resource. High-risk operation.
  * - Admin only
  * - Requires confirmation name match in request body
+ * - Pre-flight check: rejects with 409 if the resource has live children in DB
  * - Saves full resource snapshot to audit_log before deletion
  * - Marks DB record inactive after Azure confirms deletion
  *
@@ -15,6 +16,16 @@ import prisma from "@/lib/db";
 import { getTenantCredentials } from "@/lib/db/tenants";
 import { deleteAzureResource } from "@/lib/azure/deleteResource";
 import { writeAuditLog } from "@/lib/db/audit";
+
+/** True if the ARM error message is a "nested resources exist" conflict */
+function isNestedResourceError(msg: string): boolean {
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes("nested resource") ||
+    lower.includes("child resource") ||
+    (lower.includes("cannot delete") && lower.includes("exist"))
+  );
+}
 
 export async function POST(
   req: Request,
@@ -45,6 +56,39 @@ export async function POST(
       return NextResponse.json(
         { error: `Confirmation name does not match. Expected: "${resource.name}"` },
         { status: 400 }
+      );
+    }
+
+    // ── Pre-flight: detect child resources in our DB ──────────────────────
+    // Azure will reject with "nested resources exist" if children are still live.
+    // Check our DB first to give a clear, actionable error before even calling Azure.
+    // Match children by resourceId prefix: any resource whose ARM ID starts with
+    // this resource's ARM ID + "/" is a direct or indirect child.
+    const potentialChildren = await prisma.resource.findMany({
+      where: {
+        tenantId: resource.tenantId,
+        isActive: true,
+        id: { not: params.id },
+      },
+      select: { id: true, name: true, type: true, resourceId: true },
+    });
+
+    const childPrefix = resource.resourceId.toLowerCase() + "/";
+    const children = potentialChildren.filter((r) =>
+      r.resourceId.toLowerCase().startsWith(childPrefix)
+    );
+
+    if (children.length > 0) {
+      return NextResponse.json(
+        {
+          error: `Cannot delete "${resource.name}" while nested child resources still exist. Delete these first:`,
+          nestedChildren: children.map((c) => ({
+            id: c.id,
+            name: c.name,
+            type: c.type,
+          })),
+        },
+        { status: 409 }
       );
     }
 
@@ -92,11 +136,31 @@ export async function POST(
         clientSecret: creds.clientSecret,
       },
       resource.resourceId,
-      resource.type
+      resource.type,
+      resource.subscription.subscriptionId
     );
+
+    if (result.usedPreviewApiVersion) {
+      console.warn(
+        `[AzureDelete] ⚠️ Used preview API version ${result.apiVersionUsed} for ${resource.type}`
+      );
+    }
 
     if (!result.success) {
       console.error(`[AzureDelete] FAILED: ${result.error}`);
+
+      // Azure returned nested-resource error even though our DB check passed —
+      // this means Azure has children our DB doesn't know about yet (not synced).
+      if (result.error && isNestedResourceError(result.error)) {
+        return NextResponse.json(
+          {
+            error: `Azure reports nested resources still exist for "${resource.name}". Run a resource sync then try again, or delete child resources directly in Azure Portal first.`,
+            azureError: result.error,
+          },
+          { status: 409 }
+        );
+      }
+
       return NextResponse.json(
         { error: `Azure delete failed: ${result.error}` },
         { status: 400 }
