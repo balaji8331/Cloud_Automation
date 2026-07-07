@@ -1,6 +1,8 @@
 /**
- * PATCH  /api/users/:id  — update user role / name
- * DELETE /api/users/:id  — delete user
+ * PATCH  /api/users/:id  — update user name/role (ADMIN+)
+ * DELETE /api/users/:id  — delete user (ADMIN+)
+ * Note: SUPER_ADMIN role cannot be granted/changed via this endpoint.
+ * Use POST /api/users/:id/promote to grant SUPER_ADMIN.
  */
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -10,6 +12,7 @@ import { writeAuditLog } from "@/lib/db/audit";
 
 const UpdateUserSchema = z.object({
   name: z.string().optional(),
+  // SUPER_ADMIN cannot be set via this endpoint — use /promote instead
   role: z.enum(["ADMIN", "FINANCE", "READONLY"]).optional(),
 });
 
@@ -26,6 +29,14 @@ export async function PATCH(
       return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
     }
 
+    // Prevent this endpoint from modifying a SUPER_ADMIN user
+    const target = await prisma.user.findUnique({ where: { id: params.id }, select: { role: true } });
+    if (target?.role === "SUPER_ADMIN") {
+      return NextResponse.json(
+        { error: "Cannot modify a SUPER_ADMIN user via this endpoint" },
+        { status: 403 }
+      );
+    }
     const user = await prisma.user.update({
       where: { id: params.id },
       data: parsed.data,

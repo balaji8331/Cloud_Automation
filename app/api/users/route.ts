@@ -1,6 +1,8 @@
 /**
- * GET  /api/users  — list users (ADMIN only)
- * POST /api/users  — create user (ADMIN only)
+ * GET  /api/users  — list users (ADMIN+ only)
+ * POST /api/users  — create user (ADMIN+ only)
+ * SUPER_ADMIN is excluded from the role dropdown here;
+ * use POST /api/users/:id/promote to grant SUPER_ADMIN.
  */
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -13,6 +15,7 @@ const CreateUserSchema = z.object({
   email: z.string().email(),
   name: z.string().optional(),
   password: z.string().min(8),
+  // SUPER_ADMIN is intentionally excluded — use the /promote endpoint
   role: z.enum(["ADMIN", "FINANCE", "READONLY"]),
 });
 

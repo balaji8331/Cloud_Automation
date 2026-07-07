@@ -1,9 +1,9 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { Plus, Pencil, Trash2 } from "lucide-react";
+import { Plus, Pencil, Trash2, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge, BadgeVariant } from "@/components/ui/badge";
 import { useToast } from "@/components/ui/toast";
 import { formatDate } from "@/lib/utils";
 import { UserFormDialog } from "./UserFormDialog";
@@ -13,14 +13,22 @@ interface User {
   id: string;
   email: string;
   name: string | null;
-  role: "ADMIN" | "FINANCE" | "READONLY";
+  role: "SUPER_ADMIN" | "ADMIN" | "FINANCE" | "READONLY";
   createdAt: string;
 }
 
-const roleVariant: Record<User["role"], "default" | "warning" | "outline"> = {
+const roleVariant: Record<User["role"], BadgeVariant> = {
+  SUPER_ADMIN: "danger",
   ADMIN: "default",
   FINANCE: "warning",
   READONLY: "outline",
+};
+
+const roleLabel: Record<User["role"], string> = {
+  SUPER_ADMIN: "Super Admin",
+  ADMIN: "Admin",
+  FINANCE: "Finance",
+  READONLY: "Read-only",
 };
 
 export default function UsersPage() {
@@ -30,6 +38,9 @@ export default function UsersPage() {
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [promoting, setPromoting] = useState<string | null>(null);
+
+  const isSuperAdmin = session?.user?.role === "SUPER_ADMIN";
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -54,6 +65,25 @@ export default function UsersPage() {
       fetchUsers();
     } else {
       toast({ variant: "destructive", title: "Delete failed" });
+    }
+  }
+
+  async function handlePromote(user: User) {
+    if (!confirm(`Promote ${user.name ?? user.email} to SUPER_ADMIN?\n\nThis grants full terminal access to live Azure resources. This action is logged.`)) return;
+    setPromoting(user.id);
+    try {
+      const res = await fetch(`/api/users/${user.id}/promote`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        toast({ variant: "destructive", title: "Promotion failed", description: data.error });
+        return;
+      }
+      toast({ variant: "success", title: `${user.name ?? user.email} promoted to Super Admin` });
+      fetchUsers();
+    } catch {
+      toast({ variant: "destructive", title: "Network error" });
+    } finally {
+      setPromoting(null);
     }
   }
 
@@ -94,21 +124,38 @@ export default function UsersPage() {
                       <p className="text-xs text-gray-400">{user.email}</p>
                     </td>
                     <td className="py-4 pr-4">
-                      <Badge variant={roleVariant[user.role]}>{user.role}</Badge>
+                      <Badge variant={roleVariant[user.role]}>{roleLabel[user.role]}</Badge>
                     </td>
                     <td className="py-4 pr-4 text-xs text-gray-500">
                       {formatDate(user.createdAt)}
                     </td>
                     <td className="py-4">
                       <div className="flex items-center gap-1.5">
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          onClick={() => { setEditingUser(user); setDialogOpen(true); }}
-                          aria-label="Edit user"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </Button>
+                        {/* Promote to Super Admin — only visible when viewer is SUPER_ADMIN */}
+                        {isSuperAdmin && user.role !== "SUPER_ADMIN" && user.id !== session?.user?.id && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => handlePromote(user)}
+                            disabled={promoting === user.id}
+                            aria-label="Promote to Super Admin"
+                            title="Promote to Super Admin"
+                            className="text-orange-500 hover:text-orange-700 hover:bg-orange-50"
+                          >
+                            <ShieldAlert className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                        {/* Edit — hidden for SUPER_ADMIN targets */}
+                        {user.role !== "SUPER_ADMIN" && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => { setEditingUser(user); setDialogOpen(true); }}
+                            aria-label="Edit user"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
                         <Button
                           size="icon"
                           variant="ghost"

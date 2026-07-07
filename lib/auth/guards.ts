@@ -1,5 +1,16 @@
 /**
  * Server-side auth guards for API routes.
+ *
+ * Role hierarchy (ascending privilege):
+ *   READONLY < FINANCE < ADMIN < SUPER_ADMIN
+ *
+ * Usage:
+ *   requireRole("ADMIN")           — passes for ADMIN + SUPER_ADMIN (hierarchy)
+ *   requireRole(["SUPER_ADMIN"])   — passes ONLY for SUPER_ADMIN (exact allow-list)
+ *
+ * All existing requireRole("ADMIN") call-sites continue to work identically
+ * for ADMIN users. SUPER_ADMIN passes them automatically because it sits
+ * above ADMIN in the hierarchy.
  */
 import { getServerSession } from "next-auth";
 import { authOptions } from "./config";
@@ -15,7 +26,10 @@ export interface AppSession {
   };
 }
 
-/** Returns the session or throws a 401 NextResponse */
+/** Full role hierarchy — lowest to highest privilege */
+const ROLE_ORDER: UserRole[] = ["READONLY", "FINANCE", "ADMIN", "SUPER_ADMIN"];
+
+/** Returns the session or throws AuthError(401) */
 export async function requireAuth(): Promise<AppSession> {
   const session = await getServerSession(authOptions);
   if (!session?.user) {
@@ -24,18 +38,32 @@ export async function requireAuth(): Promise<AppSession> {
   return session as AppSession;
 }
 
-/** Require a minimum role level */
+/**
+ * requireRole(minRole)          — hierarchy check: user must be >= minRole
+ * requireRole([role1, role2])   — exact allow-list: user.role must be in the array
+ *
+ * Existing callers using the string form are completely unaffected.
+ */
 export async function requireRole(
-  minRole: UserRole
+  minRoleOrAllowList: UserRole | UserRole[]
 ): Promise<AppSession> {
   const session = await requireAuth();
-  const order: UserRole[] = ["READONLY", "FINANCE", "ADMIN"];
-  const userLevel = order.indexOf(session.user.role);
-  const requiredLevel = order.indexOf(minRole);
+  const userRole = session.user.role;
 
-  if (userLevel < requiredLevel) {
-    throw new AuthError(403, "Forbidden: insufficient role");
+  if (Array.isArray(minRoleOrAllowList)) {
+    // Exact allow-list mode (used for SUPER_ADMIN-only routes)
+    if (!minRoleOrAllowList.includes(userRole)) {
+      throw new AuthError(403, "Forbidden: insufficient role");
+    }
+  } else {
+    // Hierarchy mode — unchanged behaviour for all existing call-sites
+    const userLevel = ROLE_ORDER.indexOf(userRole);
+    const requiredLevel = ROLE_ORDER.indexOf(minRoleOrAllowList);
+    if (userLevel < requiredLevel) {
+      throw new AuthError(403, "Forbidden: insufficient role");
+    }
   }
+
   return session;
 }
 

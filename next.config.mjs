@@ -1,9 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   experimental: {
-    serverComponentsExternalPackages: ["@prisma/client", "prisma"],
+    serverComponentsExternalPackages: ["@prisma/client", "prisma", "dockerode", "ws"],
     instrumentationHook: true,
   },
+  transpilePackages: ["@xterm/xterm", "@xterm/addon-fit", "@xterm/addon-web-links"],
 };
 
 export default nextConfig;

@@ -36,7 +36,11 @@ export type AuditAction =
   | "DELETE_DELETION_SCHEDULE"
   | "APPROVE_DELETION_SCHEDULE"
   | "RUN_DELETION_SCHEDULE"
-  | "CANCEL_DELETION_RUN";
+  | "CANCEL_DELETION_RUN"
+  // Super Admin actions
+  | "PROMOTE_TO_SUPER_ADMIN"
+  | "TERMINAL_SESSION_START"
+  | "TERMINAL_SESSION_END";
 
 export interface AuditParams {
   userId: string;

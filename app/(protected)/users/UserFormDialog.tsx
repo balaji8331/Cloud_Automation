@@ -12,7 +12,7 @@ interface User {
   id: string;
   email: string;
   name: string | null;
-  role: "ADMIN" | "FINANCE" | "READONLY";
+  role: "SUPER_ADMIN" | "ADMIN" | "FINANCE" | "READONLY";
 }
 
 interface UserFormDialogProps {
@@ -36,7 +36,8 @@ export function UserFormDialog({ open, user, onClose, onSaved }: UserFormDialogP
     if (user) {
       setEmail(user.email);
       setName(user.name ?? "");
-      setRole(user.role);
+      // SUPER_ADMIN users are never edited via this dialog (Edit button is hidden for them)
+      setRole((user.role === "SUPER_ADMIN" ? "ADMIN" : user.role) as "ADMIN" | "FINANCE" | "READONLY");
       setPassword("");
     } else {
       setEmail(""); setName(""); setPassword(""); setRole("READONLY");

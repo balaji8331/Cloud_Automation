@@ -2,6 +2,10 @@
 @tailwind components;
 @tailwind utilities;
 
+/* xterm.js terminal styles — only active on /terminal page */
+@import "@xterm/xterm/css/xterm.css";
+
+
 @layer base {
   :root {
     --background: 0 0% 100%;
