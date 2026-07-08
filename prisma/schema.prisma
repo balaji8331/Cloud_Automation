@@ -18,7 +18,7 @@ model User {
   id            String    @id @default(cuid())
   email         String    @unique
   name          String?
-  password      String?   // bcrypt hash for credentials login
+  password      String? // bcrypt hash for credentials login
   role          UserRole  @default(READONLY)
   emailVerified DateTime?
   image         String?
@@ -26,14 +26,16 @@ model User {
   updatedAt     DateTime  @updatedAt
 
   // NextAuth relations
-  accounts      Account[]
-  sessions      Session[]
+  accounts Account[]
+  sessions Session[]
 
   // App relations
-  auditLogs     AuditLog[]
-  anomalyConfigs AnomalyConfig[]
+  auditLogs         AuditLog[]
+  anomalyConfigs    AnomalyConfig[]
   deletionSchedules DeletionSchedule[]
   terminalSessions  TerminalSession[]
+  ScriptRun         ScriptRun[]
+  AciConfig         AciConfig[]
 
   @@map("users")
 }
@@ -82,14 +84,14 @@ model VerificationToken {
 // ─────────────────────────────────────────────
 
 model Tenant {
-  id               String         @id @default(cuid())
-  name             String
-  provider         CloudProvider  @default(AZURE)  // which cloud this account belongs to
-  status           TenantStatus   @default(PENDING)
-  errorMessage     String?
-  lastSyncAt       DateTime?
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  id           String        @id @default(cuid())
+  name         String
+  provider     CloudProvider @default(AZURE) // which cloud this account belongs to
+  status       TenantStatus  @default(PENDING)
+  errorMessage String?
+  lastSyncAt   DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
 
   cloudCredential   CloudCredential?
   subscriptions     Subscription[]
@@ -101,6 +103,7 @@ model Tenant {
   resources         Resource[]
   deletionSchedules DeletionSchedule[]
   terminalSessions  TerminalSession[]
+  ScriptRun         ScriptRun[]
 
   @@map("tenants")
 }
@@ -114,11 +117,11 @@ model CloudCredential {
   id             String        @id @default(cuid())
   tenantId       String        @unique
   provider       CloudProvider
-  credentialData String        @db.Text  // AES-256-CBC encrypted JSON string
+  credentialData String        @db.Text // AES-256-CBC encrypted JSON string
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
-  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("cloud_credentials")
 }
@@ -126,17 +129,17 @@ model CloudCredential {
 model Subscription {
   id               String   @id @default(cuid())
   tenantId         String
-  subscriptionId   String                          // Azure subscription GUID
+  subscriptionId   String // Azure subscription GUID
   subscriptionName String?
   isActive         Boolean  @default(true)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  tenant           Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  costRecords      CostRecord[]
-  budgets          Budget[]
-  resourceGroups   ResourceGroup[]
-  resources        Resource[]
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  costRecords    CostRecord[]
+  budgets        Budget[]
+  resourceGroups ResourceGroup[]
+  resources      Resource[]
 
   @@unique([tenantId, subscriptionId])
   @@map("subscriptions")
@@ -147,19 +150,19 @@ model Subscription {
 // ─────────────────────────────────────────────
 
 model CostRecord {
-  id             String   @id @default(cuid())
-  tenantId       String
-  subscriptionId String   // FK to Subscription.id (internal UUID)
-  date           DateTime @db.Date
-  resourceGroup  String?
-  serviceName    String?  // Azure meter category (e.g. "Virtual Machines")
-  cost           Decimal  @db.Decimal(18, 6)
-  currency       String   @default("USD")
-  normalizedCostUsd Decimal @db.Decimal(18, 6) @default(0) // cost converted to USD at ingestion
-  ingestedAt     DateTime @default(now())
+  id                String   @id @default(cuid())
+  tenantId          String
+  subscriptionId    String // FK to Subscription.id (internal UUID)
+  date              DateTime @db.Date
+  resourceGroup     String?
+  serviceName       String? // Azure meter category (e.g. "Virtual Machines")
+  cost              Decimal  @db.Decimal(18, 6)
+  currency          String   @default("USD")
+  normalizedCostUsd Decimal  @default(0) @db.Decimal(18, 6) // cost converted to USD at ingestion
+  ingestedAt        DateTime @default(now())
 
-  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, date])
   @@index([subscriptionId, date])
@@ -173,27 +176,27 @@ model CostRecord {
 // ─────────────────────────────────────────────
 
 model Budget {
-  id             String        @id @default(cuid())
+  id             String       @id @default(cuid())
   tenantId       String
-  subscriptionId String?       // null = tenant-wide or RG-scoped budget
+  subscriptionId String? // null = tenant-wide or RG-scoped budget
   name           String
-  amount         Decimal       @db.Decimal(18, 2)
-  timeGrain      BudgetGrain   @default(MONTHLY)
-  startDate      DateTime      @db.Date
-  endDate        DateTime?     @db.Date
-  alertThreshold Decimal       @db.Decimal(5, 2) @default(0.80)
-  azureBudgetId  String?       @unique   // Azure Resource Manager budget resource ID
+  amount         Decimal      @db.Decimal(18, 2)
+  timeGrain      BudgetGrain  @default(MONTHLY)
+  startDate      DateTime     @db.Date
+  endDate        DateTime?    @db.Date
+  alertThreshold Decimal      @default(0.80) @db.Decimal(5, 2)
+  azureBudgetId  String?      @unique // Azure Resource Manager budget resource ID
   // Granular scope fields
-  scopeType      BudgetScope   @default(TENANT)  // tenant | subscription | resource_group
-  scopeId        String?                          // tenantId, subscriptionId, or RG name
-  source         BudgetSource  @default(PORTAL)  // portal | azure_native
-  azurePortalUrl String?                          // deep link to Azure Portal for azure_native budgets
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  scopeType      BudgetScope  @default(TENANT) // tenant | subscription | resource_group
+  scopeId        String? // tenantId, subscriptionId, or RG name
+  source         BudgetSource @default(PORTAL) // portal | azure_native
+  azurePortalUrl String? // deep link to Azure Portal for azure_native budgets
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
-  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
-  emailAlerts    EmailAlert[]
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
+  emailAlerts  EmailAlert[]
 
   @@map("budgets")
 }
@@ -203,14 +206,14 @@ model Budget {
 // ─────────────────────────────────────────────
 
 model AnomalyConfig {
-  id            String   @id @default(cuid())
-  tenantId      String?  // null = global default
-  thresholdPct  Decimal  @db.Decimal(5, 2) @default(50.00) // % spike vs 7-day avg
-  updatedById   String
-  updatedAt     DateTime @updatedAt
+  id           String   @id @default(cuid())
+  tenantId     String? // null = global default
+  thresholdPct Decimal  @default(50.00) @db.Decimal(5, 2) // % spike vs 7-day avg
+  updatedById  String
+  updatedAt    DateTime @updatedAt
 
-  tenant        Tenant?  @relation(fields: [tenantId], references: [id])
-  updatedBy     User     @relation(fields: [updatedById], references: [id])
+  tenant    Tenant? @relation(fields: [tenantId], references: [id])
+  updatedBy User    @relation(fields: [updatedById], references: [id])
 
   @@map("anomaly_configs")
 }
@@ -220,17 +223,17 @@ model AnomalyConfig {
 // ─────────────────────────────────────────────
 
 model EmailAlert {
-  id             String          @id @default(cuid())
+  id             String    @id @default(cuid())
   budgetId       String?
   tenantId       String?
   alertType      AlertType
-  sentAt         DateTime        @default(now())
+  sentAt         DateTime  @default(now())
   recipientEmail String
   subject        String?
-  metadata       Json?           // extra context (anomaly details, budget %, etc.)
+  metadata       Json? // extra context (anomaly details, budget %, etc.)
 
-  budget         Budget?         @relation(fields: [budgetId], references: [id])
-  tenant         Tenant?         @relation(fields: [tenantId], references: [id])
+  budget Budget? @relation(fields: [budgetId], references: [id])
+  tenant Tenant? @relation(fields: [tenantId], references: [id])
 
   @@map("email_alerts")
 }
@@ -242,15 +245,15 @@ model EmailAlert {
 model AuditLog {
   id           String   @id @default(cuid())
   userId       String
-  action       String   // e.g. "VIEW_DASHBOARD", "EXPORT_CSV", "UPDATE_TENANT"
-  resourceType String?  // e.g. "tenant", "budget", "report"
+  action       String // e.g. "VIEW_DASHBOARD", "EXPORT_CSV", "UPDATE_TENANT"
+  resourceType String? // e.g. "tenant", "budget", "report"
   resourceId   String?
   ipAddress    String?
   userAgent    String?
   metadata     Json?
   createdAt    DateTime @default(now())
 
-  user         User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 
   @@index([userId, createdAt])
   @@index([createdAt])
@@ -309,10 +312,10 @@ enum DeletionScopeType {
 }
 
 enum ApprovalStatus {
-  PENDING_DRY_RUN    // created, dry run not yet done
-  AWAITING_APPROVAL  // dry run done, waiting for admin to click Approve
-  APPROVED           // approved — will execute on schedule automatically
-  DISABLED           // schedule disabled by admin
+  PENDING_DRY_RUN // created, dry run not yet done
+  AWAITING_APPROVAL // dry run done, waiting for admin to click Approve
+  APPROVED // approved — will execute on schedule automatically
+  DISABLED // schedule disabled by admin
 }
 
 enum DeletionRunStatus {
@@ -331,18 +334,18 @@ enum DeletionRunStatus {
 model ResourceGroup {
   id             String    @id @default(cuid())
   tenantId       String
-  subscriptionId String    // FK to Subscription.id (internal UUID)
+  subscriptionId String // FK to Subscription.id (internal UUID)
   name           String
   location       String?
   tags           Json?
-  isActive       Boolean   @default(true)  // false = seen as deleted in last sync
+  isActive       Boolean   @default(true) // false = seen as deleted in last sync
   lastSyncedAt   DateTime?
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  subscription   Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
-  resources      Resource[]
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription Subscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  resources    Resource[]
 
   @@unique([tenantId, subscriptionId, name])
   @@index([tenantId])
@@ -353,24 +356,24 @@ model ResourceGroup {
 model Resource {
   id                String    @id @default(cuid())
   tenantId          String
-  subscriptionId    String    // FK to Subscription.id (internal UUID)
-  resourceGroupId   String    // FK to ResourceGroup.id
-  resourceId        String    // Azure full ARM resource ID
+  subscriptionId    String // FK to Subscription.id (internal UUID)
+  resourceGroupId   String // FK to ResourceGroup.id
+  resourceId        String // Azure full ARM resource ID
   name              String
-  type              String    // e.g. Microsoft.Compute/virtualMachines
+  type              String // e.g. Microsoft.Compute/virtualMachines
   location          String?
   sku               Json?
   provisioningState String?
   tags              Json?
-  isActive          Boolean   @default(true)  // false = deleted/decommissioned
+  isActive          Boolean   @default(true) // false = deleted/decommissioned
   manuallyRemoved   Boolean   @default(false) // soft-deleted by portal admin (NOT an Azure delete)
   lastSyncedAt      DateTime?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  tenant            Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  subscription      Subscription  @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
-  resourceGroup     ResourceGroup @relation(fields: [resourceGroupId], references: [id], onDelete: Cascade)
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subscription  Subscription  @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  resourceGroup ResourceGroup @relation(fields: [resourceGroupId], references: [id], onDelete: Cascade)
 
   @@unique([tenantId, resourceId])
   @@index([tenantId, subscriptionId])
@@ -384,26 +387,26 @@ model Resource {
 // ─────────────────────────────────────────────
 
 model DeletionSchedule {
-  id                    String              @id @default(cuid())
+  id                    String            @id @default(cuid())
   tenantId              String
   name                  String
   scopeType             DeletionScopeType
-  targetIds             Json                // array of RG names or subscription IDs
+  targetIds             Json // array of RG names or subscription IDs
   cronExpression        String
-  isEnabled             Boolean             @default(true)
-  approvalStatus        ApprovalStatus      @default(PENDING_DRY_RUN)
-  approveToken          String?             @unique  // short-lived token for email approve link
+  isEnabled             Boolean           @default(true)
+  approvalStatus        ApprovalStatus    @default(PENDING_DRY_RUN)
+  approveToken          String?           @unique // short-lived token for email approve link
   approveTokenExpiresAt DateTime?
-  excludeTagKey         String              @default("donotdelete")
-  notifyBeforeMinutes   Int                 @default(60)
-  notifyEmails          String              @default("")     // comma-separated override list
+  excludeTagKey         String            @default("donotdelete")
+  notifyBeforeMinutes   Int               @default(60)
+  notifyEmails          String            @default("") // comma-separated override list
   createdById           String
-  createdAt             DateTime            @default(now())
-  updatedAt             DateTime            @updatedAt
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
 
-  tenant                Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  createdBy             User                @relation(fields: [createdById], references: [id])
-  runs                  DeletionRun[]
+  tenant    Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User          @relation(fields: [createdById], references: [id])
+  runs      DeletionRun[]
 
   @@index([tenantId])
   @@index([approvalStatus, isEnabled])
@@ -411,21 +414,21 @@ model DeletionSchedule {
 }
 
 model DeletionRun {
-  id                    String            @id @default(cuid())
-  scheduleId            String
-  status                DeletionRunStatus @default(DRY_RUN)
-  plannedResources      Json?
-  deletedResources      Json?
-  failedResources       Json?
-  skippedResources      Json?
-  startedAt             DateTime          @default(now())
-  completedAt           DateTime?
-  cancelledBy           String?
-  cancelToken           String?           @unique
-  notifiedAt            DateTime?
-  scheduledExecutionAt  DateTime?         // when the actual delete fires (set when status=NOTIFIED)
+  id                   String            @id @default(cuid())
+  scheduleId           String
+  status               DeletionRunStatus @default(DRY_RUN)
+  plannedResources     Json?
+  deletedResources     Json?
+  failedResources      Json?
+  skippedResources     Json?
+  startedAt            DateTime          @default(now())
+  completedAt          DateTime?
+  cancelledBy          String?
+  cancelToken          String?           @unique
+  notifiedAt           DateTime?
+  scheduledExecutionAt DateTime? // when the actual delete fires (set when status=NOTIFIED)
 
-  schedule              DeletionSchedule  @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
+  schedule DeletionSchedule @relation(fields: [scheduleId], references: [id], onDelete: Cascade)
 
   @@index([scheduleId, startedAt])
   @@index([status, scheduledExecutionAt])
@@ -444,6 +447,7 @@ enum JobType {
   DELETION_EXECUTION
   ANOMALY_DETECTION
   BUDGET_ALERT_CHECK
+  SCRIPT_EXECUTION
 }
 
 enum JobPriority {
@@ -460,21 +464,21 @@ enum JobStatus {
 }
 
 model JobQueue {
-  id            String      @id @default(cuid())
-  jobType       JobType     @map("job_type")
-  tenantId      String?     @map("tenant_id")
-  referenceId   String?     @map("reference_id")
-  payload       Json?       // Job specific parameters
-  priority      JobPriority @default(SCHEDULED)
-  status        JobStatus   @default(PENDING)
-  attempts      Int         @default(0)
-  maxAttempts   Int         @default(3) @map("max_attempts")
-  errorMessage  String?     @map("error_message")
-  createdBy     String?     @map("created_by") // User ID if manually triggered
-  scheduledFor  DateTime    @default(now()) @map("scheduled_for")
-  startedAt     DateTime?   @map("started_at")
-  completedAt   DateTime?   @map("completed_at")
-  createdAt     DateTime    @default(now()) @map("created_at")
+  id           String      @id @default(cuid())
+  jobType      JobType     @map("job_type")
+  tenantId     String?     @map("tenant_id")
+  referenceId  String?     @map("reference_id")
+  payload      Json? // Job specific parameters
+  priority     JobPriority @default(SCHEDULED)
+  status       JobStatus   @default(PENDING)
+  attempts     Int         @default(0)
+  maxAttempts  Int         @default(3) @map("max_attempts")
+  errorMessage String?     @map("error_message")
+  createdBy    String?     @map("created_by") // User ID if manually triggered
+  scheduledFor DateTime    @default(now()) @map("scheduled_for")
+  startedAt    DateTime?   @map("started_at")
+  completedAt  DateTime?   @map("completed_at")
+  createdAt    DateTime    @default(now()) @map("created_at")
 
   @@index([status, scheduledFor, priority])
   @@index([tenantId, status])
@@ -482,27 +486,83 @@ model JobQueue {
 }
 
 // ─────────────────────────────────────────────
+// ON-DEMAND SCRIPT RUNS (Super Admin only)
+// ─────────────────────────────────────────────
+
+enum ScriptType {
+  bash
+  powershell
+}
+
+enum ScriptStatus {
+  running
+  completed
+  failed
+}
+
+model ScriptRun {
+  id                  String       @id @default(cuid())
+  tenantId            String
+  subscriptionId      String?
+  targetResourceGroup String?
+  name                String?
+  scriptType          ScriptType
+  scriptContent       String       @db.Text
+  status              ScriptStatus @default(running)
+  output              String?      @db.Text
+  exitCode            Int?
+  triggeredById       String
+  startedAt           DateTime     @default(now())
+  completedAt         DateTime?
+
+  tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  triggeredBy User   @relation(fields: [triggeredById], references: [id])
+
+  @@index([tenantId, startedAt])
+  @@index([triggeredById, startedAt])
+  @@map("script_runs")
+}
+
+// ─────────────────────────────────────────────
 // TERMINAL SESSIONS (Super Admin only)
 // ─────────────────────────────────────────────
 
 model TerminalSession {
-  id              String    @id @default(cuid())
-  userId          String
-  tenantId        String
-  executionId     String?   // ACI deployment name or local process ID
-  status          TerminalSessionStatus @default(ACTIVE)
-  startedAt       DateTime  @default(now())
-  endedAt         DateTime?
-  endReason       String?   // "idle_timeout" | "max_duration" | "user_disconnect" | "error"
-  ipAddress       String?
+  id          String                @id @default(cuid())
+  userId      String
+  tenantId    String
+  executionId String? // ACI deployment name or local process ID
+  status      TerminalSessionStatus @default(ACTIVE)
+  startedAt   DateTime              @default(now())
+  endedAt     DateTime?
+  endReason   String? // "idle_timeout" | "max_duration" | "user_disconnect" | "error"
+  ipAddress   String?
 
-  user            User      @relation(fields: [userId], references: [id])
-  tenant          Tenant    @relation(fields: [tenantId], references: [id])
-  commands        TerminalCommand[]
+  user     User              @relation(fields: [userId], references: [id])
+  tenant   Tenant            @relation(fields: [tenantId], references: [id])
+  commands TerminalCommand[]
 
   @@index([userId, startedAt])
   @@index([tenantId, startedAt])
   @@map("terminal_sessions")
+}
+
+// ─────────────────────────────────────────────
+// PLATFORM SETTINGS (Super Admin only)
+// ─────────────────────────────────────────────
+
+model AciConfig {
+  id               String   @id @default(cuid())
+  subscriptionId   String   @map("subscription_id")
+  resourceGroup    String   @map("resource_group")
+  location         String   @default("eastus")
+  credentialSource String   @default("default_azure_credential") @map("credential_source")
+  updatedById      String   @map("updated_by_id")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  updatedBy User @relation(fields: [updatedById], references: [id])
+
+  @@map("aci_config")
 }
 
 model TerminalCommand {
@@ -511,7 +571,7 @@ model TerminalCommand {
   commandText String   @db.Text
   executedAt  DateTime @default(now())
 
-  session     TerminalSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  session TerminalSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@index([sessionId, executedAt])
   @@map("terminal_commands")

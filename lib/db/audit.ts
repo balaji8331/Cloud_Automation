@@ -40,7 +40,10 @@ export type AuditAction =
   // Super Admin actions
   | "PROMOTE_TO_SUPER_ADMIN"
   | "TERMINAL_SESSION_START"
-  | "TERMINAL_SESSION_END";
+  | "TERMINAL_SESSION_END"
+  | "SCRIPT_RUN_TRIGGERED"
+  | "SCRIPT_RUN_COMPLETED"
+  | "SCRIPT_RUN_FAILED";
 
 export interface AuditParams {
   userId: string;

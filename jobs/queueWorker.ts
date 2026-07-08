@@ -6,6 +6,7 @@ import { JobType, JobStatus, JobPriority } from "@prisma/client";
 import { ingestTenant } from "./ingest";
 import { syncAllTenantsResources, syncTenantResources } from "./syncResources";
 import { executeScheduleRun } from "./deletionExecutor";
+import { executeScriptRun } from "./scriptExecutor";
 import { detectAnomalies } from "./anomaly";
 import { checkBudgetAlerts } from "./budgetAlerts";
 
@@ -40,6 +41,11 @@ async function processJob(job: any) {
         case JobType.DELETION_EXECUTION:
           if (!job.referenceId) throw new Error("DELETION_EXECUTION requires referenceId");
           await executeScheduleRun(job.referenceId);
+          break;
+
+        case JobType.SCRIPT_EXECUTION:
+          if (!job.referenceId) throw new Error("SCRIPT_EXECUTION requires referenceId");
+          await executeScriptRun(job.referenceId);
           break;
 
         case JobType.ANOMALY_DETECTION:

@@ -36,11 +36,25 @@ async function startTerminalServer() {
   const http = await import("http");
   const crypto = await import("crypto");
   const { PrismaClient } = await import("@prisma/client");
-  const { LocalProcessTerminalAdapter } = await import("../lib/terminal/local");
   const { decryptJson, decrypt } = await import("../lib/crypto");
+  type TerminalAdapter = import("../lib/terminal/types").TerminalAdapter;
+
+  // Enforce explicit terminal adapter selection for security
+  let adapter: TerminalAdapter;
+  const adapterType = process.env.TERMINAL_ADAPTER;
+
+  if (adapterType === "local_unsafe_dev_only") {
+    console.warn("\x1b[33m%s\x1b[0m", "⚠️ WARNING: Terminal running with NO ISOLATION (local process adapter) — do not use in any shared or production environment.");
+    const { LocalProcessTerminalAdapter } = await import("../lib/terminal/local");
+    adapter = new LocalProcessTerminalAdapter();
+  } else if (adapterType === "aci") {
+    const { AzureAciTerminalAdapter } = await import("../lib/terminal/aci");
+    adapter = new AzureAciTerminalAdapter();
+  } else {
+    throw new Error("TERMINAL_ADAPTER must be explicitly set to 'aci' or 'local_unsafe_dev_only'");
+  }
 
   const prisma = new PrismaClient();
-  const adapter = new LocalProcessTerminalAdapter();
 
   const PORT = parseInt(process.env.TERMINAL_WS_PORT ?? "3001", 10);
   const IDLE_TIMEOUT_MS = parseInt(

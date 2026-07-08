@@ -12,6 +12,8 @@ import {
   Server,
   Zap,
   Terminal,
+  TerminalSquare,
+  Settings,
 } from "lucide-react";
 import { signOut, useSession } from "next-auth/react";
 import { cn } from "@/lib/utils";
@@ -27,6 +29,8 @@ const navItems = [
   { href: "/users", label: "Users", icon: Users, adminOnly: true },
   // Super Admin exclusive
   { href: "/terminal", label: "Terminal", icon: Terminal, superAdminOnly: true },
+  { href: "/scripts", label: "Scripts", icon: TerminalSquare, superAdminOnly: true },
+  { href: "/settings/platform", label: "Platform Settings", icon: Settings, superAdminOnly: true },
 ];
 
 export function Sidebar() {
@@ -67,6 +71,7 @@ export function Sidebar() {
         {visible.map((item) => {
           const active = pathname.startsWith(item.href);
           const Icon = item.icon;
+          const isSpecial = item.superAdminOnly;
           const isTerminal = item.href === "/terminal";
           return (
             <Link
@@ -75,10 +80,10 @@ export function Sidebar() {
               className={cn(
                 "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                 active
-                  ? isTerminal
+                  ? isSpecial
                     ? "bg-orange-600 text-white"
                     : "bg-blue-600 text-white"
-                  : isTerminal
+                  : isSpecial
                   ? "text-orange-400 hover:bg-orange-900/30 hover:text-orange-300"
                   : "text-gray-400 hover:bg-gray-800 hover:text-white"
               )}

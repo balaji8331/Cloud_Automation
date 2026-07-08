@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import {
   CheckCircle,
   XCircle,
@@ -15,7 +16,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/components/ui/toast";
 import { formatDate } from "@/lib/utils";
-import { JobStatusIndicator } from "@/components/jobs/JobStatusIndicator";
 
 interface Subscription {
   id: string;
@@ -67,9 +67,10 @@ export function TenantsTable({
   onRefresh,
 }: TenantsTableProps) {
   const { toast } = useToast();
+  const router = useRouter();
   const [loadingMap, setLoadingMap] = useState<Record<string, "test" | null>>({});
   const [queueStatus, setQueueStatus] = useState<Record<string, TenantQueueStatus>>({});
-  const [activeJobs, setActiveJobs] = useState<Record<string, string>>({});
+  const [activeJobs, setActiveJobs] = useState<Record<string, boolean>>({});
 
   const setLoading = (id: string, state: "test" | null) => {
     setLoadingMap((prev) => ({ ...prev, [id]: state }));
@@ -166,51 +167,54 @@ export function TenantsTable({
     }
   }
 
-  async function handleSync(tenant: Tenant) {
+  async function handleSyncCost(tenant: Tenant) {
     try {
-      const res = await fetch(`/api/jobs/run-now`, { 
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobType: "COST_INGESTION", tenantId: tenant.id })
-      });
+      setActiveJobs(prev => ({ ...prev, [tenant.id]: true }));
+      const res = await fetch(`/api/tenants/${tenant.id}/sync`, { method: "POST" });
       const data = await res.json();
+      
       if (res.status === 409) {
-        toast({ variant: "default", title: "Job Queued", description: "This job is already in progress." });
-        if (data.jobId) setActiveJobs(prev => ({ ...prev, [tenant.id]: data.jobId }));
+        toast({ variant: "default", title: "Job Queued", description: "This sync is already in progress." });
         return;
       }
+      
       if (res.ok) {
-        toast({ variant: "default", title: "Cost Sync Queued", description: "Tracking progress..." });
-        setActiveJobs(prev => ({ ...prev, [tenant.id]: data.jobId }));
+        toast({ variant: "default", title: "Cost Sync Complete", description: "Costs have been updated." });
+        router.refresh();
       } else {
         toast({ variant: "destructive", title: "Sync failed", description: data.error ?? `HTTP ${res.status}` });
       }
     } catch {
       toast({ variant: "destructive", title: "Error", description: "Request failed" });
+    } finally {
+      setActiveJobs(prev => {
+        const next = { ...prev };
+        delete next[tenant.id];
+        return next;
+      });
     }
   }
 
   async function handleSyncResources(tenant: Tenant) {
     try {
-      const res = await fetch(`/api/jobs/run-now`, { 
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobType: "RESOURCE_SYNC", tenantId: tenant.id })
-      });
+      setActiveJobs(prev => ({ ...prev, [tenant.id]: true }));
+      const res = await fetch(`/api/resources/sync?tenantId=${tenant.id}`, { method: "POST" });
       const data = await res.json();
-      if (res.status === 409) {
-        toast({ variant: "default", title: "Job Queued", description: "This job is already in progress." });
-        if (data.jobId) setActiveJobs(prev => ({ ...prev, [tenant.id]: data.jobId }));
-        return;
-      }
+      
       if (res.ok) {
-        toast({ variant: "default", title: "Resource Sync Queued", description: "Tracking progress..." });
-        setActiveJobs(prev => ({ ...prev, [tenant.id]: data.jobId }));
+        toast({ variant: "default", title: "Resource Sync Complete", description: "Resources have been updated." });
+        router.refresh();
       } else {
         toast({ variant: "destructive", title: "Sync failed", description: data.error ?? `HTTP ${res.status}` });
       }
     } catch {
       toast({ variant: "destructive", title: "Error", description: "Request failed" });
+    } finally {
+      setActiveJobs(prev => {
+        const next = { ...prev };
+        delete next[tenant.id];
+        return next;
+      });
     }
   }
 
@@ -295,15 +299,6 @@ export function TenantsTable({
                     {tenant.errorMessage}
                   </p>
                 )}
-                {activeJobs[tenant.id] && (
-                  <div className="mt-2 min-w-[250px]">
-                    <JobStatusIndicator 
-                      jobId={activeJobs[tenant.id]} 
-                      onClose={() => setActiveJobs(prev => { const n = {...prev}; delete n[tenant.id]; return n; })}
-                      onComplete={onRefresh}
-                    />
-                  </div>
-                )}
               </td>
               <td className="py-4 pr-4 text-xs text-gray-500">
                 {tenant.lastSyncAt ? formatDate(tenant.lastSyncAt) : "Never"}
@@ -324,7 +319,7 @@ export function TenantsTable({
                     size="sm"
                     variant="outline"
                     loading={!!activeJobs[tenant.id]}
-                    onClick={() => handleSync(tenant)}
+                    onClick={() => handleSyncCost(tenant)}
                     title="Sync cost data"
                     disabled={!!activeJobs[tenant.id]}
                   >
