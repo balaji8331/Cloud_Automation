@@ -1,8 +1,12 @@
 /**
- * Tenant DB helpers — wraps Prisma calls for tenants + subscriptions.
+ * Tenant DB helpers — wraps Prisma calls for tenants + cloud credentials.
+ *
+ * PUBLIC API UNCHANGED: getTenantCredentials() still returns the same
+ * { azureTenantId, clientId, clientSecret, subscriptions[] } shape so
+ * no callers in jobs/ or app/api/ need to change.
  */
 import prisma from "./index";
-import { encrypt, decrypt } from "@/lib/crypto";
+import { encrypt, decrypt, encryptJson, decryptJson } from "@/lib/crypto";
 import type { Tenant, Subscription, TenantStatus } from "@prisma/client";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -26,11 +30,18 @@ export interface TenantWithSubs extends Tenant {
   subscriptions: Subscription[];
 }
 
+/** Shape stored inside CloudCredential.credentialData for AZURE provider */
+interface AzureCredentialData {
+  azureTenantId: string;
+  clientId: string;
+  clientSecretEnc: string; // AES-256 encrypted plaintext secret
+}
+
 // ─── Read ─────────────────────────────────────────────────────────────────────
 
 export async function getAllTenants(): Promise<TenantWithSubs[]> {
   return prisma.tenant.findMany({
-    include: { subscriptions: true },
+    include: { subscriptions: true, cloudCredential: true },
     orderBy: { createdAt: "asc" },
   });
 }
@@ -38,7 +49,7 @@ export async function getAllTenants(): Promise<TenantWithSubs[]> {
 export async function getTenantById(id: string): Promise<TenantWithSubs | null> {
   return prisma.tenant.findUnique({
     where: { id },
-    include: { subscriptions: true },
+    include: { subscriptions: true, cloudCredential: true },
   });
 }
 
@@ -48,32 +59,52 @@ export async function getTenantCredentials(id: string): Promise<{
   clientId: string;
   clientSecret: string;
   subscriptions: Subscription[];
+  provider: "AZURE" | "AWS" | "GCP";
+  credentialData: string;
 } | null> {
   const tenant = await prisma.tenant.findUnique({
     where: { id },
-    include: { subscriptions: { where: { isActive: true } } },
+    include: {
+      subscriptions: { where: { isActive: true } },
+      cloudCredential: true,
+    },
   });
-  if (!tenant) return null;
+  if (!tenant || !tenant.cloudCredential) return null;
+
+  const creds = decryptJson<AzureCredentialData>(
+    tenant.cloudCredential.credentialData
+  );
+
   return {
-    azureTenantId: tenant.azureTenantId,
-    clientId: tenant.clientId,
-    clientSecret: decrypt(tenant.clientSecretEnc),
+    azureTenantId: creds.azureTenantId,
+    clientId: creds.clientId,
+    clientSecret: decrypt(creds.clientSecretEnc),
     subscriptions: tenant.subscriptions,
+    provider: tenant.provider,
+    credentialData: tenant.cloudCredential.credentialData,
   };
 }
 
 // ─── Create ───────────────────────────────────────────────────────────────────
 
 export async function createTenant(input: TenantCreateInput): Promise<TenantWithSubs> {
-  const clientSecretEnc = encrypt(input.clientSecret);
+  const credentialData = encryptJson<AzureCredentialData>({
+    azureTenantId: input.azureTenantId,
+    clientId: input.clientId,
+    clientSecretEnc: encrypt(input.clientSecret),
+  });
 
   return prisma.tenant.create({
     data: {
       name: input.name,
-      azureTenantId: input.azureTenantId,
-      clientId: input.clientId,
-      clientSecretEnc,
+      provider: "AZURE",
       status: "PENDING",
+      cloudCredential: {
+        create: {
+          provider: "AZURE",
+          credentialData,
+        },
+      },
       subscriptions: {
         create: input.subscriptionIds.map((subId) => ({
           subscriptionId: subId,
@@ -90,26 +121,47 @@ export async function updateTenant(
   id: string,
   input: TenantUpdateInput
 ): Promise<TenantWithSubs> {
-  const data: Record<string, unknown> = {};
-  if (input.name) data.name = input.name;
-  if (input.clientId) data.clientId = input.clientId;
-  if (input.clientSecret) data.clientSecretEnc = encrypt(input.clientSecret);
+  const tenantData: Record<string, unknown> = {};
+  if (input.name) tenantData.name = input.name;
 
-  // Run in a transaction so subscription changes are atomic
+  // Run in a transaction so all changes are atomic
   return prisma.$transaction(async (tx) => {
-    const tenant = await tx.tenant.update({
-      where: { id },
-      data,
-    });
+    // Update tenant name if provided
+    if (Object.keys(tenantData).length > 0) {
+      await tx.tenant.update({ where: { id }, data: tenantData });
+    }
 
+    // Update credential fields if provided
+    if (input.clientId || input.clientSecret) {
+      const existing = await tx.cloudCredential.findUnique({
+        where: { tenantId: id },
+      });
+
+      if (existing) {
+        const currentCreds = decryptJson<AzureCredentialData>(
+          existing.credentialData
+        );
+        const updatedCreds: AzureCredentialData = {
+          azureTenantId: currentCreds.azureTenantId,
+          clientId: input.clientId ?? currentCreds.clientId,
+          clientSecretEnc: input.clientSecret
+            ? encrypt(input.clientSecret)
+            : currentCreds.clientSecretEnc,
+        };
+        await tx.cloudCredential.update({
+          where: { tenantId: id },
+          data: { credentialData: encryptJson(updatedCreds) },
+        });
+      }
+    }
+
+    // Manage subscriptions
     if (input.subscriptionIds !== undefined) {
-      // Remove subs not in new list
       await tx.subscription.updateMany({
         where: { tenantId: id, subscriptionId: { notIn: input.subscriptionIds } },
         data: { isActive: false },
       });
 
-      // Upsert subs in new list
       for (const subId of input.subscriptionIds) {
         await tx.subscription.upsert({
           where: { tenantId_subscriptionId: { tenantId: id, subscriptionId: subId } },
@@ -120,7 +172,7 @@ export async function updateTenant(
     }
 
     return tx.tenant.findUniqueOrThrow({
-      where: { id: tenant.id },
+      where: { id },
       include: { subscriptions: true },
     });
   });

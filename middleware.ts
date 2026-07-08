@@ -6,23 +6,16 @@
  * Public routes (login, auth API, static assets) are explicitly excluded.
  */
 import { withAuth } from "next-auth/middleware";
-import { NextResponse } from "next/server";
 
-export default withAuth(
-  function middleware(req) {
-    // If authenticated, allow the request through
-    return NextResponse.next();
+export default withAuth({
+  callbacks: {
+    authorized: ({ token }) => !!token,
   },
-  {
-    callbacks: {
-      // Return true = allow, false = redirect to signIn page
-      authorized: ({ token }) => !!token,
-    },
-    pages: {
-      signIn: "/login",
-    },
-  }
-);
+  pages: {
+    signIn: "/login",
+  },
+  secret: process.env.NEXTAUTH_SECRET,
+});
 
 // Apply middleware to all routes EXCEPT public ones
 export const config = {

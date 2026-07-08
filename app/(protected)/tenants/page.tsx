@@ -37,7 +37,11 @@ export default function TenantsPage() {
     try {
       const res = await fetch("/api/tenants");
       const data = await res.json();
-      setTenants(data);
+      if (Array.isArray(data)) {
+        setTenants(data);
+      } else {
+        toast({ variant: "destructive", title: "Failed to load tenants", description: data.error || "Unknown error" });
+      }
     } finally {
       setLoading(false);
     }

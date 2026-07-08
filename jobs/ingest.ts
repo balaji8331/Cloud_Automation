@@ -8,7 +8,7 @@ import prisma from "@/lib/db";
 import { getTenantCredentials } from "@/lib/db/tenants";
 import { setTenantStatus } from "@/lib/db/tenants";
 import { upsertCostRecords } from "@/lib/db/costs";
-import { queryCostBySubscription } from "@/lib/azure/costManagement";
+import { getProviderClient } from "@/lib/providers";
 import { runTenantOperation } from "@/lib/azure/tenantQueue";
 import { detectAnomalies } from "./anomaly";
 import { toUsd } from "@/lib/currency";
@@ -66,19 +66,18 @@ async function ingestTenantWork(
 
   let totalRecords = 0;
 
+  const providerClient = getProviderClient({
+    provider: creds.provider,
+    credentialData: creds.credentialData
+  });
+
   try {
     for (const sub of creds.subscriptions) {
       console.log(`[Ingest] Querying ${sub.subscriptionId} (${sub.subscriptionName ?? "unnamed"})`);
 
-      const rows = await queryCostBySubscription(
-        {
-          azureTenantId: creds.azureTenantId,
-          clientId: creds.clientId,
-          clientSecret: creds.clientSecret,
-        },
-        sub.subscriptionId,
-        from,
-        to
+      const rows = await providerClient.queryCosts(
+        { providerScopeId: sub.subscriptionId },
+        { from, to }
       );
 
       const records = rows.map((row) => ({

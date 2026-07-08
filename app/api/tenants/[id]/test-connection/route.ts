@@ -5,8 +5,8 @@
 import { NextResponse } from "next/server";
 import { requireRole } from "@/lib/auth/guards";
 import { getTenantCredentials, setTenantStatus } from "@/lib/db/tenants";
-import { testCostManagementAccess } from "@/lib/azure/costManagement";
 import { runTenantOperation, TenantBusyError } from "@/lib/azure/tenantQueue";
+import { getProviderClient } from "@/lib/providers";
 import { writeAuditLog } from "@/lib/db/audit";
 import prisma from "@/lib/db";
 
@@ -35,29 +35,29 @@ export async function POST(
 
         let allSuccess = true;
 
+        const providerClient = getProviderClient({
+          provider: creds.provider,
+          credentialData: creds.credentialData
+        });
+
         for (const sub of creds.subscriptions) {
-          const result = await testCostManagementAccess(
-            {
-              azureTenantId: creds.azureTenantId,
-              clientId: creds.clientId,
-              clientSecret: creds.clientSecret,
-            },
-            sub.subscriptionId
-          );
+          const result = await providerClient.testConnection({
+            providerScopeId: sub.subscriptionId
+          });
 
           results.push({
             subscriptionId: sub.subscriptionId,
-            subscriptionName: result.subscriptionName,
+            subscriptionName: result.scopeName,
             success: result.success,
             error: result.error,
           });
 
           if (!result.success) allSuccess = false;
 
-          if (result.subscriptionName) {
+          if (result.scopeName) {
             await prisma.subscription.update({
               where: { id: sub.id },
-              data: { subscriptionName: result.subscriptionName },
+              data: { subscriptionName: result.scopeName },
             });
           }
         }

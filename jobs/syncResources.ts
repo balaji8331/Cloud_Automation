@@ -12,7 +12,7 @@
  */
 import prisma from "@/lib/db";
 import { getTenantCredentials } from "@/lib/db/tenants";
-import { queryResourceGraph, queryResourceGroups } from "@/lib/azure/resourceGraph";
+import { getProviderClient } from "@/lib/providers";
 
 export interface ResourceSyncResult {
   tenantId: string;
@@ -47,21 +47,24 @@ export async function syncTenantResources(tenantId: string): Promise<ResourceSyn
   const syncedAt = new Date();
 
   try {
+    const providerClient = getProviderClient({
+      provider: creds.provider,
+      credentialData: creds.credentialData
+    });
+
     // ── 1. Sync resource groups ────────────────────────────────────────────
-    const azureRGs = await queryResourceGroups(
-      { azureTenantId: creds.azureTenantId, clientId: creds.clientId, clientSecret: creds.clientSecret },
-      azureSubIds
-    );
-    // Build a local map: "internalSubId:rgNameLower" → DB record id
     const rgMap = new Map<string, string>();
 
-    for (const rg of azureRGs) {
-      // BUG CHECK 3: normalize to lowercase for lookup
-      const internalSubId = subIdMap.get(rg.subscriptionId.toLowerCase());
+    for (const subId of azureSubIds) {
+      const internalSubId = subIdMap.get(subId.toLowerCase());
       if (!internalSubId) {
-        console.warn(`[ResourceSync] RG "${rg.name}" — Azure subscriptionId ${rg.subscriptionId} not in subIdMap, skipping`);
+        console.warn(`[ResourceSync] Azure subscriptionId ${subId} not in subIdMap, skipping`);
         continue;
       }
+
+      const azureRGs = await providerClient.listResourceGroups({ providerScopeId: subId });
+
+      for (const rg of azureRGs) {
 
       const record = await prisma.resourceGroup.upsert({
         where: { tenantId_subscriptionId_name: { tenantId, subscriptionId: internalSubId, name: rg.name } },
@@ -84,25 +87,20 @@ export async function syncTenantResources(tenantId: string): Promise<ResourceSyn
 
       // BUG FIX 1: build map with both exact and lowercase key for lookup
       rgMap.set(`${internalSubId}:${rg.name.toLowerCase()}`, record.id);
+      }
     }
 
     // ── 2. Sync resources ──────────────────────────────────────────────────
-    const { resources: azureResources, usedFallback } = await queryResourceGraph(
-      { azureTenantId: creds.azureTenantId, clientId: creds.clientId, clientSecret: creds.clientSecret },
-      azureSubIds
-    );
-    console.log(`[ResourceSync] ${tenant.name}: ${azureRGs.length} RGs, ${azureResources.length} resources from Azure (fallback=${usedFallback})`);
-
     let resourcesUpserted = 0;
     let resourcesSkipped = 0;
 
-    for (const res of azureResources) {
-      const internalSubId = subIdMap.get(res.subscriptionId.toLowerCase());
-      if (!internalSubId) {
-        console.warn(`[ResourceSync] Resource "${res.name}" — subscriptionId ${res.subscriptionId} not in subIdMap`);
-        resourcesSkipped++;
-        continue;
-      }
+    for (const subId of azureSubIds) {
+      const internalSubId = subIdMap.get(subId.toLowerCase());
+      if (!internalSubId) continue;
+
+      const azureResources = await providerClient.listResources({ providerScopeId: subId });
+      
+      for (const res of azureResources) {
 
       // BUG FIX 1: look up RG by normalized name
       const rgName = res.resourceGroup?.trim() || "_unassigned";
@@ -161,6 +159,7 @@ export async function syncTenantResources(tenantId: string): Promise<ResourceSyn
       });
 
       resourcesUpserted++;
+      }
     }
 
     console.log(`[ResourceSync] ${tenant.name}: upserted=${resourcesUpserted} skipped=${resourcesSkipped}`);

@@ -78,32 +78,49 @@ model VerificationToken {
 }
 
 // ─────────────────────────────────────────────
-// AZURE TENANT MANAGEMENT
+// TENANT / CLOUD ACCOUNT MANAGEMENT
 // ─────────────────────────────────────────────
 
 model Tenant {
-  id               String       @id @default(cuid())
+  id               String         @id @default(cuid())
   name             String
-  azureTenantId    String       @unique
-  clientId         String
-  clientSecretEnc  String       @db.Text  // AES-256-CBC encrypted
-  status           TenantStatus @default(PENDING)
+  provider         CloudProvider  @default(AZURE)  // which cloud this account belongs to
+  status           TenantStatus   @default(PENDING)
   errorMessage     String?
   lastSyncAt       DateTime?
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
 
-  subscriptions    Subscription[]
-  costRecords      CostRecord[]
-  budgets          Budget[]
-  anomalyConfigs   AnomalyConfig[]
-  emailAlerts      EmailAlert[]
-  resourceGroups   ResourceGroup[]
-  resources        Resource[]
+  cloudCredential   CloudCredential?
+  subscriptions     Subscription[]
+  costRecords       CostRecord[]
+  budgets           Budget[]
+  anomalyConfigs    AnomalyConfig[]
+  emailAlerts       EmailAlert[]
+  resourceGroups    ResourceGroup[]
+  resources         Resource[]
   deletionSchedules DeletionSchedule[]
   terminalSessions  TerminalSession[]
 
   @@map("tenants")
+}
+
+/// Cloud-provider credentials, one row per Tenant.
+/// credentialData is a JSON blob (AES-256-CBC encrypted at the application layer).
+/// Azure shape: { azureTenantId, clientId, clientSecretEnc }
+/// AWS shape:   { accessKeyId, secretKeyEnc, roleArn }
+/// GCP shape:   { serviceAccountJsonEnc }
+model CloudCredential {
+  id             String        @id @default(cuid())
+  tenantId       String        @unique
+  provider       CloudProvider
+  credentialData String        @db.Text  // AES-256-CBC encrypted JSON string
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("cloud_credentials")
 }
 
 model Subscription {
@@ -249,6 +266,12 @@ enum UserRole {
   ADMIN
   FINANCE
   READONLY
+}
+
+enum CloudProvider {
+  AZURE
+  AWS
+  GCP
 }
 
 enum TenantStatus {
@@ -466,7 +489,7 @@ model TerminalSession {
   id              String    @id @default(cuid())
   userId          String
   tenantId        String
-  containerId     String?   // Docker container ID while running
+  executionId     String?   // ACI deployment name or local process ID
   status          TerminalSessionStatus @default(ACTIVE)
   startedAt       DateTime  @default(now())
   endedAt         DateTime?

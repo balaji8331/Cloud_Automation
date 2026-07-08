@@ -8,6 +8,19 @@ import { z } from "zod";
 import { requireRole } from "@/lib/auth/guards";
 import { getTenantById, updateTenant, deleteTenant } from "@/lib/db/tenants";
 import { writeAuditLog } from "@/lib/db/audit";
+import { decryptJson } from "@/lib/crypto";
+
+function sanitizeTenant(tenant: NonNullable<Awaited<ReturnType<typeof getTenantById>>>) {
+  const { cloudCredential, ...rest } = tenant as any;
+  const credData = cloudCredential
+    ? decryptJson<{ azureTenantId: string; clientId: string }>(cloudCredential.credentialData)
+    : null;
+  return {
+    ...rest,
+    azureTenantId: credData?.azureTenantId ?? null,
+    clientId: credData?.clientId ?? null,
+  };
+}
 
 const UpdateTenantSchema = z.object({
   name: z.string().min(1).max(100).optional(),
@@ -34,7 +47,7 @@ export async function GET(
       resourceId: params.id,
     });
 
-    const { clientSecretEnc: _secret, ...sanitized } = tenant;
+    const sanitized = sanitizeTenant(tenant);
     return NextResponse.json(sanitized);
   } catch (err: unknown) {
     if (err instanceof Error && "status" in err) {
@@ -58,7 +71,7 @@ export async function PATCH(
     }
 
     const tenant = await updateTenant(params.id, parsed.data);
-    const { clientSecretEnc: _secret, ...sanitized } = tenant;
+    const sanitized = sanitizeTenant(tenant as any);
 
     await writeAuditLog({
       userId: session.user.id,

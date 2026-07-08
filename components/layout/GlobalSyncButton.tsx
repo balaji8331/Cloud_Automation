@@ -20,7 +20,7 @@ interface SyncState {
 
 export function GlobalSyncButton() {
   const { data: session } = useSession();
-  const isAdmin = session?.user?.role === "ADMIN";
+  const isAdmin = session?.user?.role === "ADMIN" || session?.user?.role === "SUPER_ADMIN";
   // Use shared context — no duplicate fetch
   const { tenants } = useTenants();
   const { notifySyncComplete } = useSyncEvent();

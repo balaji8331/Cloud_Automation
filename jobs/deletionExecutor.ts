@@ -14,11 +14,13 @@
 import prisma from "@/lib/db";
 import { ApprovalStatus } from "@prisma/client";
 import { getTenantCredentials } from "@/lib/db/tenants";
-import { queryResourceGraph } from "@/lib/azure/resourceGraph";
-import { deleteAzureResource } from "@/lib/azure/deleteResource";
+import { getProviderClient } from "@/lib/providers";
+import type { NormalizedResource } from "@/lib/providers/types";
 import { sendEmail } from "@/lib/email";
 import { randomBytes } from "crypto";
-import type { AzureResource } from "@/lib/azure/resourceGraph";
+
+// Local augmentation for filtering
+export type AzureResource = NormalizedResource & { subscriptionId: string };
 
 // ─── Dependency-aware deletion ordering ───────────────────────────────────────
 
@@ -123,10 +125,16 @@ async function queryTargetedResources(
   const targetIds = schedule.targetIds as string[];
   const azureSubIds = creds.subscriptions.map((s) => s.subscriptionId);
 
-  const { resources: allResources } = await queryResourceGraph(
-    { azureTenantId: creds.azureTenantId, clientId: creds.clientId, clientSecret: creds.clientSecret },
-    azureSubIds
-  );
+  const providerClient = getProviderClient({
+    provider: creds.provider,
+    credentialData: creds.credentialData
+  });
+
+  const allResources: AzureResource[] = [];
+  for (const subId of azureSubIds) {
+    const res = await providerClient.listResources({ providerScopeId: subId });
+    allResources.push(...res.map((r) => ({ ...r, subscriptionId: subId })));
+  }
 
   let targeted = allResources.filter((r) => {
     if (schedule.scopeType === "RESOURCE_GROUP" || schedule.scopeType === "MULTIPLE_RESOURCE_GROUPS") {
@@ -295,47 +303,44 @@ export async function executeLiveRun(scheduleId: string, runId: string): Promise
         break;
       }
 
-      const delResult = await deleteAzureResource(
-        { azureTenantId: creds.azureTenantId, clientId: creds.clientId, clientSecret: creds.clientSecret },
-        resource.id,
-        resource.type,
-        resource.subscriptionId
-      );
+      const providerClient = getProviderClient({ provider: creds.provider, credentialData: creds.credentialData });
 
-      if (delResult.usedPreviewApiVersion) {
-        console.warn(`[DeletionExecutor] ⚠️ ${resource.name} (${resource.type}) used PREVIEW API version ${delResult.apiVersionUsed}`);
-      }
-
-      if (delResult.success) {
+      try {
+        await providerClient.deleteResource(resource.id);
+        
         deleted.push({ id: resource.id, name: resource.name });
         await prisma.resource.updateMany({
           where: { resourceId: resource.id, tenantId: schedule.tenantId },
           data: { isActive: false },
         });
-      } else if (delResult.error && isNestedResourceError(delResult.error)) {
-        const existingDefer = deferredParents.find((d) => d.resource.id === resource.id);
-        if (existingDefer) {
-          existingDefer.retries++;
-          if (existingDefer.retries >= MAX_RETRIES) {
-            failed.push({ id: resource.id, name: resource.name, error: `Max retries exceeded: ${delResult.error}` });
+      } catch (err: unknown) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        
+        if (isNestedResourceError(errorMsg)) {
+          const existingDefer = deferredParents.find((d) => d.resource.id === resource.id);
+          if (existingDefer) {
+            existingDefer.retries++;
+            if (existingDefer.retries >= MAX_RETRIES) {
+              failed.push({ id: resource.id, name: resource.name, error: `Max retries exceeded: ${errorMsg}` });
+            } else {
+              pendingDeletions.push(resource);
+            }
           } else {
+            deferredParents.push({ resource, retries: 0 });
+            const pendingIds = new Set(pendingDeletions.map((r) => r.id));
+            const deletedIds = new Set(deleted.map((d) => d.id));
+            const children = findChildResources(resource, allResources, errorMsg)
+              .filter((c) => !deletedIds.has(c.id) && !pendingIds.has(c.id));
+            if (children.length > 0) {
+              pendingDeletions.unshift(...sortResourcesForDeletion(children));
+            }
             pendingDeletions.push(resource);
+            console.log(`[DeletionExecutor] Deferred "${resource.name}" — ${children.length} child(ren) inserted ahead`);
           }
         } else {
-          deferredParents.push({ resource, retries: 0 });
-          const pendingIds = new Set(pendingDeletions.map((r) => r.id));
-          const deletedIds = new Set(deleted.map((d) => d.id));
-          const children = findChildResources(resource, allResources, delResult.error)
-            .filter((c) => !deletedIds.has(c.id) && !pendingIds.has(c.id));
-          if (children.length > 0) {
-            pendingDeletions.unshift(...sortResourcesForDeletion(children));
-          }
-          pendingDeletions.push(resource);
-          console.log(`[DeletionExecutor] Deferred "${resource.name}" — ${children.length} child(ren) inserted ahead`);
+          failed.push({ id: resource.id, name: resource.name, error: errorMsg ?? "Unknown error" });
+          console.warn(`[DeletionExecutor] Failed to delete ${resource.name}: ${errorMsg}`);
         }
-      } else {
-        failed.push({ id: resource.id, name: resource.name, error: delResult.error ?? "Unknown error" });
-        console.warn(`[DeletionExecutor] Failed to delete ${resource.name}: ${delResult.error}`);
       }
     }
 

@@ -6,13 +6,14 @@ import { NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth/guards";
 import prisma from "@/lib/db";
 import { getTenantQueueStatus } from "@/lib/azure/tenantQueue";
+import { decryptJson } from "@/lib/crypto";
 
 export async function GET() {
   try {
     await requireAuth();
 
     const tenants = await prisma.tenant.findMany({
-      select: { id: true, azureTenantId: true },
+      select: { id: true, cloudCredential: true },
     });
 
     const status: Record<
@@ -21,7 +22,13 @@ export async function GET() {
     > = {};
 
     for (const t of tenants) {
-      status[t.id] = getTenantQueueStatus(t.azureTenantId);
+      // Extract azureTenantId from the encrypted credential blob
+      if (t.cloudCredential) {
+        const creds = decryptJson<{ azureTenantId: string }>(
+          t.cloudCredential.credentialData
+        );
+        status[t.id] = getTenantQueueStatus(creds.azureTenantId);
+      }
     }
 
     return NextResponse.json({ status });

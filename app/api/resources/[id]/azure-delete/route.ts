@@ -14,7 +14,7 @@ import { NextResponse } from "next/server";
 import { requireRole, AuthError } from "@/lib/auth/guards";
 import prisma from "@/lib/db";
 import { getTenantCredentials } from "@/lib/db/tenants";
-import { deleteAzureResource } from "@/lib/azure/deleteResource";
+import { getProviderClient } from "@/lib/providers";
 import { writeAuditLog } from "@/lib/db/audit";
 
 /** True if the ARM error message is a "nested resources exist" conflict */
@@ -128,61 +128,45 @@ export async function POST(
       `[AzureDelete] RESOURCE — user=${session.user.email} resource="${resource.name}" type=${resource.type} id=${resource.resourceId}`
     );
 
-    // Call Azure ARM DELETE
-    const result = await deleteAzureResource(
-      {
-        azureTenantId: creds.azureTenantId,
-        clientId: creds.clientId,
-        clientSecret: creds.clientSecret,
-      },
-      resource.resourceId,
-      resource.type,
-      resource.subscription.subscriptionId
-    );
+    const providerClient = getProviderClient({
+      provider: creds.provider,
+      credentialData: creds.credentialData
+    });
 
-    if (result.usedPreviewApiVersion) {
-      console.warn(
-        `[AzureDelete] ⚠️ Used preview API version ${result.apiVersionUsed} for ${resource.type}`
-      );
-    }
+    try {
+      await providerClient.deleteResource(resource.resourceId);
 
-    if (!result.success) {
-      console.error(`[AzureDelete] FAILED: ${result.error}`);
+      // Mark as inactive in our DB
+      await prisma.resource.update({
+        where: { id: params.id },
+        data: { isActive: false, manuallyRemoved: true },
+      });
 
-      // Azure returned nested-resource error even though our DB check passed —
-      // this means Azure has children our DB doesn't know about yet (not synced).
-      if (result.error && isNestedResourceError(result.error)) {
+      console.log(`[AzureDelete] SUCCESS — resource "${resource.name}" deleted`);
+
+      return NextResponse.json({
+        success: true,
+        message: "Resource deleted successfully",
+      });
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[AzureDelete] FAILED: ${errorMsg}`);
+
+      if (isNestedResourceError(errorMsg)) {
         return NextResponse.json(
           {
             error: `Azure reports nested resources still exist for "${resource.name}". Run a resource sync then try again, or delete child resources directly in Azure Portal first.`,
-            azureError: result.error,
+            azureError: errorMsg,
           },
           { status: 409 }
         );
       }
 
       return NextResponse.json(
-        { error: `Azure delete failed: ${result.error}` },
+        { error: `Azure delete failed: ${errorMsg}` },
         { status: 400 }
       );
     }
-
-    // Mark as inactive in our DB
-    await prisma.resource.update({
-      where: { id: params.id },
-      data: { isActive: false, manuallyRemoved: true },
-    });
-
-    console.log(`[AzureDelete] SUCCESS — resource "${resource.name}" deleted (async=${result.async})`);
-
-    return NextResponse.json({
-      success: true,
-      async: result.async,
-      statusUrl: result.statusUrl,
-      message: result.async
-        ? "Delete accepted by Azure — resource is being deleted asynchronously"
-        : "Resource deleted successfully",
-    });
   } catch (err: unknown) {
     if (err instanceof AuthError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

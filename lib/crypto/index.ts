@@ -49,3 +49,17 @@ export function decrypt(ciphertext: string): string {
   const decrypted = Buffer.concat([decipher.update(enc), decipher.final()]);
   return decrypted.toString("utf8");
 }
+
+/**
+ * Encrypt a JSON-serialisable object (used for CloudCredential.credentialData).
+ */
+export function encryptJson<T>(obj: T): string {
+  return encrypt(JSON.stringify(obj));
+}
+
+/**
+ * Decrypt a value produced by encryptJson() and parse it back to T.
+ */
+export function decryptJson<T>(ciphertext: string): T {
+  return JSON.parse(decrypt(ciphertext)) as T;
+}

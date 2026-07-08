@@ -10,7 +10,7 @@ import { NextResponse } from "next/server";
 import { requireRole, AuthError } from "@/lib/auth/guards";
 import prisma from "@/lib/db";
 import { getTenantCredentials } from "@/lib/db/tenants";
-import { deleteAzureResourceGroup } from "@/lib/azure/deleteResource";
+import { getProviderClient } from "@/lib/providers";
 import { writeAuditLog } from "@/lib/db/audit";
 
 export async function POST(
@@ -76,48 +76,43 @@ export async function POST(
       `[AzureDelete] RESOURCE GROUP — user=${session.user.email} rg="${rg.name}" sub=${rg.subscription.subscriptionId} resources=${rg.resources.length}`
     );
 
-    // Call Azure ARM DELETE
-    const result = await deleteAzureResourceGroup(
-      {
-        azureTenantId: creds.azureTenantId,
-        clientId: creds.clientId,
-        clientSecret: creds.clientSecret,
-      },
-      rg.subscription.subscriptionId,
-      rg.name
-    );
+    const providerClient = getProviderClient({
+      provider: creds.provider,
+      credentialData: creds.credentialData
+    });
 
-    if (!result.success) {
-      console.error(`[AzureDelete] RG FAILED: ${result.error}`);
+    const armGroupId = `/subscriptions/${rg.subscription.subscriptionId}/resourceGroups/${rg.name}`;
+    
+    try {
+      await providerClient.deleteResource(armGroupId);
+
+      // Mark RG and all its resources as inactive in DB
+      await prisma.$transaction([
+        prisma.resource.updateMany({
+          where: { resourceGroupId: params.id },
+          data: { isActive: false, manuallyRemoved: true },
+        }),
+        prisma.resourceGroup.update({
+          where: { id: params.id },
+          data: { isActive: false },
+        }),
+      ]);
+
+      console.log(`[AzureDelete] RG SUCCESS — "${rg.name}" deleted`);
+
+      return NextResponse.json({
+        success: true,
+        resourceCount: rg.resources.length,
+        message: `Resource group "${rg.name}" deleted successfully`,
+      });
+    } catch (err: unknown) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[AzureDelete] RG FAILED: ${errorMsg}`);
       return NextResponse.json(
-        { error: `Azure delete failed: ${result.error}` },
+        { error: `Azure delete failed: ${errorMsg}` },
         { status: 400 }
       );
     }
-
-    // Mark RG and all its resources as inactive in DB
-    await prisma.$transaction([
-      prisma.resource.updateMany({
-        where: { resourceGroupId: params.id },
-        data: { isActive: false, manuallyRemoved: true },
-      }),
-      prisma.resourceGroup.update({
-        where: { id: params.id },
-        data: { isActive: false },
-      }),
-    ]);
-
-    console.log(`[AzureDelete] RG SUCCESS — "${rg.name}" deleted (async=${result.async})`);
-
-    return NextResponse.json({
-      success: true,
-      async: result.async,
-      statusUrl: result.statusUrl,
-      resourceCount: rg.resources.length,
-      message: result.async
-        ? `Delete accepted by Azure — "${rg.name}" is being deleted asynchronously`
-        : `Resource group "${rg.name}" deleted successfully`,
-    });
   } catch (err: unknown) {
     if (err instanceof AuthError) {
       return NextResponse.json({ error: err.message }, { status: err.status });

@@ -38,7 +38,7 @@ export default function BudgetsPage() {
   const { data: session } = useSession();
   const { toast } = useToast();
   const { tenants } = useTenants();
-  const isAdmin = session?.user?.role === "ADMIN";
+  const isAdmin = session?.user?.role === "ADMIN" || session?.user?.role === "SUPER_ADMIN";
 
   const [budgets, setBudgets] = useState<BudgetRow[]>([]);
   const [loading, setLoading] = useState(true);

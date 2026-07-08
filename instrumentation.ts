@@ -1,17 +1,13 @@
 /**
- * Next.js instrumentation hook — runs once when the server starts.
- * This is the correct place to bootstrap long-running background jobs
- * (cron scheduler, deletion schedulers) without a custom server.
+ * Next.js instrumentation hook.
  *
- * Docs: https://nextjs.org/docs/app/building-your-application/optimizing/instrumentation
+ * Background jobs (scheduler, automation poller) and the WebSocket terminal
+ * server have been moved to the standalone worker process (`npm run worker`).
+ * This file is intentionally a no-op to keep the Next.js web process clean.
+ *
+ * To start background services: npm run worker
  */
 export async function register() {
-  // Only run in the Node.js runtime (not in the Edge runtime)
-  if (process.env.NEXT_RUNTIME === "nodejs") {
-    // Dynamic import so the scheduler module (and node-cron) is only loaded
-    // server-side and never bundled into client code.
-    const { startScheduler } = await import("./jobs/scheduler");
-    startScheduler();
-    console.log("[Instrumentation] Background scheduler started");
-  }
+  // No background jobs in the web process.
+  // All background work is handled by worker/index.ts.
 }

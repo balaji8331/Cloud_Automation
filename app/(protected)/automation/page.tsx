@@ -123,7 +123,7 @@ function lifecycleStatus(s: AutomationSchedule): React.ReactNode {
 export default function AutomationPage() {
   const { data: session } = useSession();
   const { toast } = useToast();
-  const isAdmin = session?.user?.role === "ADMIN";
+  const isAdmin = session?.user?.role === "ADMIN" || session?.user?.role === "SUPER_ADMIN";
   const { tenants } = useTenants();
 
   const [schedules, setSchedules] = useState<AutomationSchedule[]>([]);

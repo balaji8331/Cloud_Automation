@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { AzureDeleteDialog } from "@/components/ui/AzureDeleteDialog";
+import { BulkAzureDeleteDialog } from "@/components/ui/BulkAzureDeleteDialog";
 import { useToast } from "@/components/ui/toast";
 import { useSession } from "next-auth/react";
 import { useTenants } from "@/lib/context/TenantsContext";
@@ -47,7 +48,7 @@ function statusVariant(s: string | null): "success" | "danger" | "warning" | "ou
 export default function ResourcesPage() {
   const { data: session } = useSession();
   const { toast } = useToast();
-  const isAdmin = session?.user?.role === "ADMIN";
+  const isAdmin = session?.user?.role === "ADMIN" || session?.user?.role === "SUPER_ADMIN";
   const { tenants } = useTenants();
 
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([]);
@@ -71,6 +72,10 @@ export default function ResourcesPage() {
   // Azure delete dialog
   const [azureDeleteTarget, setAzureDeleteTarget] = useState<{
     id: string; name: string; type: "resource" | "resource group"; detail?: string;
+  } | null>(null);
+
+  const [bulkAzureDeleteTarget, setBulkAzureDeleteTarget] = useState<{
+    type: "resource" | "resource_group"; count: number;
   } | null>(null);
 
   // Level: tenants → subscriptions → groups → resources
@@ -221,6 +226,43 @@ export default function ResourcesPage() {
     toast({ variant: "success", title: data.async ? "Delete in progress" : "Deleted from Azure", description: data.message });
     if (type === "resource group") fetchGroups();
     else fetchResources();
+  }
+
+  async function executeBulkAzureDelete(confirmPhrase: string) {
+    if (!bulkAzureDeleteTarget) return;
+    const { type } = bulkAzureDeleteTarget;
+    const ids = type === "resource_group" ? Array.from(selectedRGs) : Array.from(selectedResources);
+    
+    const res = await fetch("/api/resources/bulk-azure-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids, targetType: type, confirmPhrase }),
+    });
+    
+    const data = await res.json();
+    
+    if (data.success) {
+      const failed = data.total - data.deleted;
+      if (failed > 0) {
+        toast({ 
+          variant: "destructive", 
+          title: `Partial success (${data.deleted}/${data.total} deleted)`, 
+          description: `Some deletions failed — likely due to nested resources. Check Azure Portal for details.` 
+        });
+      } else {
+        toast({ variant: "success", title: "Bulk delete initiated", description: `Successfully submitted ${data.deleted} deletions to Azure.` });
+      }
+      
+      if (type === "resource_group") {
+        setSelectedRGs(new Set());
+        fetchGroups();
+      } else {
+        setSelectedResources(new Set());
+        fetchResources();
+      }
+    } else {
+      throw new Error(data.error || "Bulk delete failed.");
+    }
   }
 
   // ── Selection helpers ─────────────────────────────────────────────────────
@@ -379,6 +421,12 @@ export default function ResourcesPage() {
                     onClick={() => handleBulkRemove("resource_group")}>
                     <Trash2 className="h-3.5 w-3.5" /> Remove selected from portal
                   </Button>
+                  <Button size="sm" variant="destructive"
+                    className="bg-red-600 hover:bg-red-700"
+                    disabled={bulkDeleting}
+                    onClick={() => setBulkAzureDeleteTarget({ type: "resource_group", count: selectedRGs.size })}>
+                    <ShieldAlert className="h-3.5 w-3.5" /> Delete selected from Azure
+                  </Button>
                 </div>
               )}
             </div>
@@ -529,6 +577,12 @@ export default function ResourcesPage() {
                       loading={bulkDeleting} onClick={() => handleBulkRemove("resource")}>
                       <Trash2 className="h-3.5 w-3.5" /> Remove selected from portal
                     </Button>
+                    <Button size="sm" variant="destructive"
+                      className="bg-red-600 hover:bg-red-700"
+                      disabled={bulkDeleting}
+                      onClick={() => setBulkAzureDeleteTarget({ type: "resource", count: selectedResources.size })}>
+                      <ShieldAlert className="h-3.5 w-3.5" /> Delete selected from Azure
+                    </Button>
                   </>
                 ) : (
                   <p className="text-xs text-gray-400">
@@ -674,6 +728,16 @@ export default function ResourcesPage() {
           resourceName={azureDeleteTarget.name}
           resourceType={azureDeleteTarget.type}
           detail={azureDeleteTarget.detail}
+        />
+      )}
+
+      {bulkAzureDeleteTarget && (
+        <BulkAzureDeleteDialog
+          open={!!bulkAzureDeleteTarget}
+          onClose={() => setBulkAzureDeleteTarget(null)}
+          onConfirm={executeBulkAzureDelete}
+          count={bulkAzureDeleteTarget.count}
+          resourceType={bulkAzureDeleteTarget.type}
         />
       )}
     </div>

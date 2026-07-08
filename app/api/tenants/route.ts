@@ -5,8 +5,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireRole } from "@/lib/auth/guards";
-import { getAllTenants, createTenant } from "@/lib/db/tenants";
+import { getAllTenants, createTenant, getTenantById } from "@/lib/db/tenants";
 import { writeAuditLog } from "@/lib/db/audit";
+import { decryptJson } from "@/lib/crypto";
 
 const CreateTenantSchema = z.object({
   name: z.string().min(1).max(100),
@@ -16,18 +17,29 @@ const CreateTenantSchema = z.object({
   subscriptionIds: z.array(z.string().uuid()).min(1),
 });
 
+/** Augments the Tenant row with safe credential fields for the UI */
+function sanitizeTenant(tenant: Awaited<ReturnType<typeof getTenantById>>) {
+  if (!tenant) return null;
+  const { cloudCredential, ...rest } = tenant as any;
+  const credData = cloudCredential
+    ? decryptJson<{ azureTenantId: string; clientId: string }>(cloudCredential.credentialData)
+    : null;
+  return {
+    ...rest,
+    azureTenantId: credData?.azureTenantId ?? null,
+    clientId: credData?.clientId ?? null,
+    // clientSecret intentionally omitted from all responses
+  };
+}
+
 export async function GET() {
   try {
-    const session = await requireRole("READONLY");
+    await requireRole("READONLY");
     const tenants = await getAllTenants();
-
-    // Skip audit log for list reads — too noisy, high frequency
-    // await writeAuditLog({ userId: session.user.id, action: "VIEW_TENANTS" });
-
-    // Strip encrypted secret from response
-    const sanitized = tenants.map(({ clientSecretEnc: _secret, ...t }) => t);
+    const sanitized = tenants.map((t) => sanitizeTenant(t as any));
     return NextResponse.json(sanitized);
   } catch (err: unknown) {
+    console.error("[GET /api/tenants] Error:", err);
     if (err instanceof Error && "status" in err) {
       return NextResponse.json({ error: err.message }, { status: (err as { status: number }).status });
     }
@@ -46,7 +58,7 @@ export async function POST(req: Request) {
     }
 
     const tenant = await createTenant(parsed.data);
-    const { clientSecretEnc: _secret, ...sanitized } = tenant;
+    const sanitized = sanitizeTenant(tenant as any);
 
     await writeAuditLog({
       userId: session.user.id,
