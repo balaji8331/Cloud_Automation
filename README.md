@@ -16,8 +16,10 @@ A self-hosted, multi-tenant Azure cost monitoring portal. Connects to multiple A
 | Azure | `@azure/identity` (ClientSecretCredential) |
 | Cost API | Azure Cost Management Query API |
 | Resource API | Azure Resource Graph API (ARM fallback) |
+| Terminal | WebSocket + Node-PTY + xterm.js (Local process) |
 | Email | Resend |
 | Scheduling | node-cron (daily at 02:00 UTC) |
+| Worker | Unified background worker (WebSockets, Cron, Job Queues) |
 
 ---
 
@@ -73,8 +75,14 @@ npm run db:seed
 
 ### 5. Run
 
+Start the Next.js dev server:
 ```bash
 npm run dev
+```
+
+In a **separate terminal**, start the unified background worker (handles cron jobs, automation queues, and the Web Terminal WebSocket server):
+```bash
+npm run worker
 ```
 
 Open [http://localhost:3000](http://localhost:3000) — redirects to login.
@@ -191,18 +199,20 @@ azure-cost-portal/
 
 ### Access Control
 
-| Feature | Admin | Finance | Read-only |
-|---|---|---|---|
-| View dashboards | ✅ | ✅ | ✅ |
-| View resources | ✅ | ✅ | ✅ |
-| View budgets | ✅ | ✅ | ✅ |
-| Export CSV/PDF | ✅ | ✅ | ❌ |
-| Trigger syncs | ✅ | ❌ | ❌ |
-| Manage tenants | ✅ | ❌ | ❌ |
-| Manage users | ✅ | ❌ | ❌ |
-| Manage budgets | ✅ | ❌ | ❌ |
+| Feature | Super Admin | Admin | Finance | Read-only |
+|---|---|---|---|---|
+| View dashboards | ✅ | ✅ | ✅ | ✅ |
+| View resources | ✅ | ✅ | ✅ | ✅ |
+| View budgets | ✅ | ✅ | ✅ | ✅ |
+| Export CSV/PDF | ✅ | ✅ | ✅ | ❌ |
+| Trigger syncs | ✅ | ✅ | ❌ | ❌ |
+| Manage tenants | ✅ | ✅ | ❌ | ❌ |
+| Manage users | ✅ | ✅ | ❌ | ❌ |
+| Manage budgets | ✅ | ✅ | ❌ | ❌ |
+| Web Terminal | ✅ | ❌ | ❌ | ❌ |
 
 Every data access is logged to the `audit_log` table (user, action, timestamp).
+The `SUPER_ADMIN` role cannot be assigned directly on user creation; it must be explicitly granted by an existing Super Admin via the UI.
 
 ---
 
@@ -246,14 +256,19 @@ az role assignment create \
 
 ---
 
-## Scheduled Jobs
+## Scheduled Jobs & Automation
 
-Daily at 02:00 UTC (configurable via `INGEST_CRON` env var):
+The unified worker (`npm run worker`) processes several background tasks:
 
-1. Cost ingestion — last 30 days for all connected tenants
-2. Budget threshold alerts
-3. Anomaly detection
-4. Resource inventory sync
+1. **Daily Cron (02:00 UTC)**:
+   - Cost ingestion — last 30 days for all connected tenants
+   - Budget threshold alerts
+   - Anomaly detection
+   - Resource inventory sync
+2. **Automation Queue**:
+   - Polling checks for pending resource tasks (e.g. orphan cleanup).
+3. **Web Terminal Server**:
+   - Hosts a secure WebSocket server on port 3001 for live Super Admin interactive shells.
 
 Manual triggers available via UI buttons on the Tenants page.
 
@@ -278,6 +293,7 @@ To switch to SMTP, replace the `sendEmail()` function body in `lib/email/index.t
 | Script | Description |
 |---|---|
 | `npm run dev` | Start development server |
+| `npm run worker` | Start background worker (cron, WebSockets, queues) |
 | `npm run build` | Production build |
 | `npm run db:migrate` | Run Prisma migrations |
 | `npm run db:push` | Push schema without migration history |
