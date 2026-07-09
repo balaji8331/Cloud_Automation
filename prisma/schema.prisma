@@ -36,6 +36,7 @@ model User {
   terminalSessions  TerminalSession[]
   ScriptRun         ScriptRun[]
   AciConfig         AciConfig[]
+  ScriptSchedule    ScriptSchedule[]
 
   @@map("users")
 }
@@ -104,6 +105,7 @@ model Tenant {
   deletionSchedules DeletionSchedule[]
   terminalSessions  TerminalSession[]
   ScriptRun         ScriptRun[]
+  ScriptSchedule    ScriptSchedule[]
 
   @@map("tenants")
 }
@@ -512,15 +514,43 @@ model ScriptRun {
   output              String?      @db.Text
   exitCode            Int?
   triggeredById       String
+  scheduleId          String?
   startedAt           DateTime     @default(now())
   completedAt         DateTime?
 
-  tenant      Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  triggeredBy User   @relation(fields: [triggeredById], references: [id])
+  tenant      Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  triggeredBy User            @relation(fields: [triggeredById], references: [id])
+  schedule    ScriptSchedule? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
 
   @@index([tenantId, startedAt])
   @@index([triggeredById, startedAt])
   @@map("script_runs")
+}
+
+model ScriptSchedule {
+  id                  String     @id @default(cuid())
+  tenantId            String
+  subscriptionId      String?
+  targetResourceGroup String?
+  name                String
+  description         String?
+  scriptType          ScriptType
+  scriptContent       String     @db.Text
+  cronExpression      String
+  isEnabled           Boolean    @default(true)
+  lastRunAt           DateTime?
+  nextRunAt           DateTime?
+  createdById         String
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  tenant    Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  createdBy User        @relation(fields: [createdById], references: [id])
+  runs      ScriptRun[]
+
+  @@index([tenantId])
+  @@index([isEnabled, nextRunAt])
+  @@map("script_schedules")
 }
 
 // ─────────────────────────────────────────────

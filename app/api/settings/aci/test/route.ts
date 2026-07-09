@@ -26,7 +26,7 @@ export async function POST(req: Request) {
       restartPolicy: "Never",
       containers: [{
         name: "test-cli",
-        image: "alpine",
+        image: "mcr.microsoft.com/azure-cli:latest",
         resources: { requests: { memoryInGB: 1.0, cpu: 1.0 } },
         command: ["echo", "ok"]
       }]

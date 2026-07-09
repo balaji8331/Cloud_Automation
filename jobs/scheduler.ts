@@ -10,6 +10,7 @@ import prisma from "@/lib/db";
 import { JobType, JobPriority } from "@prisma/client";
 import { startWorker } from "./queueWorker";
 import { startAutomationPoller } from "./automationPoller";
+import { startScriptPoller } from "./scriptPoller";
 
 // Daily at 02:00 UTC
 const CRON_SCHEDULE = process.env.INGEST_CRON ?? "0 2 * * *";
@@ -81,4 +82,7 @@ export function startScheduler(): void {
 
   // Start the automation lifecycle poller (dry runs, notifications, executions)
   startAutomationPoller();
+  
+  // Start the scheduled script poller
+  startScriptPoller();
 }

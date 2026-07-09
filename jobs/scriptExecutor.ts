@@ -1,7 +1,7 @@
 import { PrismaClient, ScriptStatus } from "@prisma/client";
 import { ContainerInstanceManagementClient } from "@azure/arm-containerinstance";
 import { DefaultAzureCredential } from "@azure/identity";
-import { decryptJson } from "@/lib/crypto";
+import { decryptJson, decrypt } from "@/lib/crypto";
 import { sendEmail } from "@/lib/email";
 import { writeAuditLog } from "@/lib/db/audit";
 import { getAciConfig } from "@/lib/db/settings";
@@ -19,7 +19,7 @@ export async function executeScriptRun(scriptRunId: string) {
   if (!run.tenant.cloudCredential) throw new Error("Tenant has no credentials");
 
   const creds = decryptJson(run.tenant.cloudCredential.credentialData) as { azureTenantId: string; clientId: string; clientSecretEnc: string };
-  const clientSecret = creds.clientSecretEnc;
+  const clientSecret = decrypt(creds.clientSecretEnc);
 
   // ACI_SUBSCRIPTION_ID and ACI_RESOURCE_GROUP refer to OUR management subscription 
   // used to HOST the ephemeral container instances. This is completely separate 
@@ -36,10 +36,10 @@ export async function executeScriptRun(scriptRunId: string) {
 
   const containerGroupName = `script-run-${crypto.randomUUID().split("-")[0]}`;
   
-  const envVars = [
+  const envVars: any[] = [
     { name: "AZURE_TENANT_ID", value: creds.azureTenantId },
     { name: "AZURE_CLIENT_ID", value: creds.clientId },
-    { name: "AZURE_CLIENT_SECRET", value: clientSecret },
+    { name: "AZURE_CLIENT_SECRET", secureValue: clientSecret },
     { name: "SCRIPT_CONTENT", value: run.scriptContent }
   ];
   

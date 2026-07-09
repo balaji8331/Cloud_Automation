@@ -105,8 +105,8 @@ export function TenantFormDialog({
       clientId: clientId.trim(),
       subscriptionIds: validSubs,
     };
-    if (clientSecret) body.clientSecret = clientSecret;
-    if (!isEdit) body.clientSecret = clientSecret;
+    if (clientSecret) body.clientSecret = clientSecret.trim();
+    if (!isEdit) body.clientSecret = clientSecret.trim();
 
     const url = isEdit ? `/api/tenants/${tenant.id}` : "/api/tenants";
     const method = isEdit ? "PATCH" : "POST";
