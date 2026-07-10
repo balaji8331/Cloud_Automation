@@ -27,8 +27,8 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # Install openssl for Prisma and bash for the local terminal adapter
 RUN apk add --no-cache openssl bash
 
-# Copy Next.js artifacts
-COPY --from=builder /app/public ./public
+# Copy Next.js artifacts (using wildcard so it doesn't crash if the public folder is empty/missing from Git)
+COPY --from=builder /app/publi[c] ./public
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 
