@@ -28,7 +28,7 @@ jobs:
           DEFAULT_ANOMALY_THRESHOLD=${{ secrets.DEFAULT_ANOMALY_THRESHOLD }}
           EXCHANGE_RATES_TO_USD=${{ secrets.EXCHANGE_RATES_TO_USD }}
           TERMINAL_WS_PORT=${{ vars.TERMINAL_WS_PORT || '3001' }}
-          NEXT_PUBLIC_TERMINAL_WS_URL=${{ vars.NEXT_PUBLIC_TERMINAL_WS_URL || 'ws://localhost:3001' }}
+          NEXT_PUBLIC_TERMINAL_WS_URL=${{ vars.NEXT_PUBLIC_TERMINAL_WS_URL || 'wss://portal.balaji.page' }}
           TERMINAL_IDLE_TIMEOUT_MS=${{ vars.TERMINAL_IDLE_TIMEOUT_MS || '900000' }}
           TERMINAL_MAX_SESSION_MS=${{ vars.TERMINAL_MAX_SESSION_MS || '7200000' }}
           TERMINAL_DOCKER_IMAGE=${{ vars.TERMINAL_DOCKER_IMAGE || 'mcr.microsoft.com/azure-cli' }}
@@ -42,6 +42,22 @@ jobs:
           '@
           $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
           [System.IO.File]::WriteAllText((Join-Path $PWD ".env"), $envContent, $utf8NoBom)
+
+      - name: Verify Docker access
+        run: |
+          docker version
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Docker is not reachable from this GitHub runner."
+            Write-Host "On the Windows laptop, start Docker Desktop and confirm 'docker version' works in PowerShell."
+            Write-Host "If the runner runs as a service, run that service as a Windows user in the docker-users group."
+            exit 1
+          }
+
+          docker compose version
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Docker Compose is not reachable from this GitHub runner."
+            exit 1
+          }
 
       - name: Build Docker images
         run: docker compose build
