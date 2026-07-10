@@ -45,6 +45,11 @@ jobs:
 
       - name: Verify Docker access
         run: |
+          Write-Host "Runner user:"
+          whoami
+          Write-Host "docker-users group:"
+          net localgroup docker-users
+
           docker version
           if ($LASTEXITCODE -ne 0) {
             Write-Host "Docker is not reachable from this GitHub runner."
