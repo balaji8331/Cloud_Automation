@@ -35,6 +35,8 @@ COPY --from=builder /app/.next/static ./.next/static
 # Copy worker/jobs and dependencies needed for the background worker
 COPY --from=builder /app/worker ./worker
 COPY --from=builder /app/jobs ./jobs
+COPY --from=builder /app/lib ./lib
+COPY --from=builder /app/types ./types
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
