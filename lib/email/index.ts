@@ -4,10 +4,17 @@
  */
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+let resend: Resend | null = null;
 
-const FROM = process.env.ALERT_FROM_EMAIL ?? "alerts@example.com";
-const DEFAULT_TO = process.env.ALERT_TO_EMAIL ?? "finance@example.com";
+function getResendClient(): Resend {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    throw new Error("RESEND_API_KEY is required to send email");
+  }
+
+  resend ??= new Resend(apiKey);
+  return resend;
+}
 
 export interface EmailPayload {
   to?: string;
@@ -16,9 +23,9 @@ export interface EmailPayload {
 }
 
 export async function sendEmail(payload: EmailPayload): Promise<void> {
-  const { data, error } = await resend.emails.send({
-    from: FROM,
-    to: payload.to ?? DEFAULT_TO,
+  const { data, error } = await getResendClient().emails.send({
+    from: process.env.ALERT_FROM_EMAIL ?? "alerts@example.com",
+    to: payload.to ?? process.env.ALERT_TO_EMAIL ?? "finance@example.com",
     subject: payload.subject,
     html: payload.html,
   });

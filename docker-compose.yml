@@ -1,0 +1,49 @@
+services:
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: root
+      POSTGRES_DB: azure_cost_portal
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U root -d azure_cost_portal"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  web:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      # Override the DB URL to point to the docker container instead of localhost
+      - DATABASE_URL=postgresql://root:root@db:5432/azure_cost_portal
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["node_modules/.bin/tsx", "worker/index.ts"]
+    ports:
+      - "3001:3001" # Web Terminal WebSocket
+    env_file:
+      - .env
+    environment:
+      # Override the DB URL to point to the docker container instead of localhost
+      - DATABASE_URL=postgresql://root:root@db:5432/azure_cost_portal
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

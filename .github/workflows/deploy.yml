@@ -1,0 +1,90 @@
+name: Deploy to Windows Docker Host
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Windows]
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Write .env file
+        run: |
+          $envContent = @'
+          NEXTAUTH_URL=${{ secrets.NEXTAUTH_URL }}
+          NEXTAUTH_SECRET=${{ secrets.NEXTAUTH_SECRET }}
+          SECRET_ENCRYPTION_KEY=${{ secrets.SECRET_ENCRYPTION_KEY }}
+          RESEND_API_KEY=${{ secrets.RESEND_API_KEY }}
+          ALERT_FROM_EMAIL=${{ secrets.ALERT_FROM_EMAIL }}
+          ALERT_TO_EMAIL=${{ secrets.ALERT_TO_EMAIL }}
+          DEFAULT_ANOMALY_THRESHOLD=${{ secrets.DEFAULT_ANOMALY_THRESHOLD }}
+          EXCHANGE_RATES_TO_USD=${{ secrets.EXCHANGE_RATES_TO_USD }}
+          TERMINAL_WS_PORT=${{ vars.TERMINAL_WS_PORT || '3001' }}
+          NEXT_PUBLIC_TERMINAL_WS_URL=${{ vars.NEXT_PUBLIC_TERMINAL_WS_URL || 'ws://localhost:3001' }}
+          TERMINAL_IDLE_TIMEOUT_MS=${{ vars.TERMINAL_IDLE_TIMEOUT_MS || '900000' }}
+          TERMINAL_MAX_SESSION_MS=${{ vars.TERMINAL_MAX_SESSION_MS || '7200000' }}
+          TERMINAL_DOCKER_IMAGE=${{ vars.TERMINAL_DOCKER_IMAGE || 'mcr.microsoft.com/azure-cli' }}
+          TERMINAL_ADAPTER=${{ vars.TERMINAL_ADAPTER || 'aci' }}
+          ACI_SUBSCRIPTION_ID=${{ secrets.ACI_SUBSCRIPTION_ID }}
+          ACI_RESOURCE_GROUP=${{ vars.ACI_RESOURCE_GROUP || 'ScriptRunner' }}
+          ACI_LOCATION=${{ vars.ACI_LOCATION || 'eastus' }}
+          AZURE_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET }}
+          '@
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText((Join-Path $PWD ".env"), $envContent, $utf8NoBom)
+
+      - name: Build Docker images
+        run: docker compose build
+
+      - name: Start database
+        run: docker compose up -d db
+
+      - name: Wait for database
+        run: |
+          for ($i = 1; $i -le 20; $i++) {
+            docker compose exec -T db pg_isready -U root -d azure_cost_portal
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "Database is ready"
+              exit 0
+            }
+
+            Write-Host "Waiting for database... attempt $i/20"
+            Start-Sleep -Seconds 3
+          }
+
+          docker compose logs db
+          throw "Database did not become ready"
+
+      - name: Run database migrations
+        run: docker compose run --rm web npx prisma migrate deploy
+
+      - name: Start application
+        run: |
+          docker compose up -d web worker
+          docker compose ps
+
+      - name: Health check
+        run: |
+          for ($i = 1; $i -le 20; $i++) {
+            try {
+              Invoke-WebRequest -Uri "http://localhost:3000/api/auth/session" -UseBasicParsing -TimeoutSec 5 | Out-Null
+              Write-Host "App is healthy"
+              exit 0
+            } catch {
+              Write-Host "Waiting for app... attempt $i/20"
+              Start-Sleep -Seconds 3
+            }
+          }
+
+          docker compose logs --tail 100 web worker
+          throw "Health check failed"
