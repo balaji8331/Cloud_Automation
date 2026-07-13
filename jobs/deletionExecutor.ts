@@ -385,7 +385,8 @@ export async function executeLiveRun(scheduleId: string, runId: string): Promise
   const failed: { id: string; name: string; error: string }[] = [];
   const pendingDeletions = [...ordered];
   const deferredParents: Array<{ resource: AzureResource; retries: number }> = [];
-  const MAX_RETRIES = 3;
+  const MAX_RETRIES = 5;
+  const finalPassDeletions: Array<{ resource: AzureResource; errorMsg: string }> = [];
 
   try {
     while (pendingDeletions.length > 0) {
@@ -408,6 +409,11 @@ export async function executeLiveRun(scheduleId: string, runId: string): Promise
           where: { resourceId: resource.id, tenantId: schedule.tenantId },
           data: { isActive: false },
         });
+
+        if (resource.type.toLowerCase() === "microsoft.compute/virtualmachines") {
+          console.log(`[DeletionExecutor] VM ${resource.name} deleted successfully. Pausing 15s to allow Azure to release attached disks...`);
+          await new Promise((resolve) => setTimeout(resolve, 15000));
+        }
       } catch (err: unknown) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         
@@ -416,7 +422,8 @@ export async function executeLiveRun(scheduleId: string, runId: string): Promise
           if (existingDefer) {
             existingDefer.retries++;
             if (existingDefer.retries >= MAX_RETRIES) {
-              failed.push({ id: resource.id, name: resource.name, error: `Max retries exceeded: ${errorMsg}` });
+              console.log(`[DeletionExecutor] ${resource.name} exhausted MAX_RETRIES (${MAX_RETRIES}). Moving to final pass queue.`);
+              finalPassDeletions.push({ resource, errorMsg });
             } else {
               pendingDeletions.push(resource);
             }
@@ -436,6 +443,28 @@ export async function executeLiveRun(scheduleId: string, runId: string): Promise
         } else {
           failed.push({ id: resource.id, name: resource.name, error: errorMsg ?? "Unknown error" });
           console.warn(`[DeletionExecutor] Failed to delete ${resource.name}: ${errorMsg}`);
+        }
+      }
+    }
+
+    if (finalPassDeletions.length > 0) {
+      console.log(`[DeletionExecutor] Executing final pass for ${finalPassDeletions.length} resources that exhausted retries...`);
+      for (const { resource, errorMsg } of finalPassDeletions) {
+        try {
+          console.log(`[DeletionExecutor] ${resource.name}: giving final retry after full batch pass (previous error: ${errorMsg})`);
+          
+          const providerClient = getProviderClient({ provider: creds.provider, credentialData: creds.credentialData });
+          await providerClient.deleteResource(resource.id);
+          
+          deleted.push({ id: resource.id, name: resource.name });
+          await prisma.resource.updateMany({
+            where: { resourceId: resource.id, tenantId: schedule.tenantId },
+            data: { isActive: false },
+          });
+        } catch (err: unknown) {
+          const finalErrorMsg = err instanceof Error ? err.message : String(err);
+          failed.push({ id: resource.id, name: resource.name, error: `Final pass failed: ${finalErrorMsg}` });
+          console.warn(`[DeletionExecutor] Final pass failed for ${resource.name}: ${finalErrorMsg}`);
         }
       }
     }
