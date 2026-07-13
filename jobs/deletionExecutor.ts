@@ -24,9 +24,7 @@ export type AzureResource = NormalizedResource & { subscriptionId: string };
 
 // ─── Dependency-aware deletion ordering ───────────────────────────────────────
 
-const PARENT_TYPE_PRIORITY: Record<string, number> = {
-  "microsoft.compute/virtualmachines": 0,
-  "microsoft.compute/virtualmachines/extensions": 100,
+
 /**
  * PERFORMANCE OPTIMIZATION ONLY
  * This graph is a performance optimization for known-common dependency patterns — 
