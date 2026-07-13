@@ -27,16 +27,72 @@ export type AzureResource = NormalizedResource & { subscriptionId: string };
 const PARENT_TYPE_PRIORITY: Record<string, number> = {
   "microsoft.compute/virtualmachines": 0,
   "microsoft.compute/virtualmachines/extensions": 100,
-  "microsoft.network/networkinterfaces": 50,
-  "microsoft.network/publicipaddresses": 60,
-  "microsoft.compute/disks": 50,
+/**
+ * PERFORMANCE OPTIMIZATION ONLY
+ * This graph is a performance optimization for known-common dependency patterns — 
+ * it reduces wasted delete attempts for cases we've already seen fail. 
+ * It is NOT the correctness guarantee for arbitrary resource types. 
+ * The generic retry loop (isNestedResourceError + findChildResources + deferredParents) 
+ * is what makes deletion correct for resource types NOT in this graph — 
+ * do not remove or weaken the retry loop under the assumption the graph covers everything.
+ */
+const TYPE_DEPENDENCY_GRAPH: [string, string][] = [
+  ["microsoft.compute/virtualmachines", "microsoft.compute/disks"],
+  ["microsoft.compute/virtualmachines", "microsoft.network/networkinterfaces"],
+  ["microsoft.network/networkinterfaces", "microsoft.network/publicipaddresses"],
+  ["microsoft.network/networkinterfaces", "microsoft.network/virtualnetworks"],
+  ["microsoft.network/networkinterfaces", "microsoft.network/networksecuritygroups"],
+  ["microsoft.network/virtualnetworks", "microsoft.network/networksecuritygroups"],
+  ["microsoft.web/sites", "microsoft.web/serverfarms"],
+  ["microsoft.compute/virtualmachines/extensions", "microsoft.compute/virtualmachines"],
+];
+
+function buildTypeRanks(): Record<string, number> {
+  const graph = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+
+  for (const [first, after] of TYPE_DEPENDENCY_GRAPH) {
+    if (!graph.has(first)) graph.set(first, []);
+    if (!graph.has(after)) graph.set(after, []);
+    if (!inDegree.has(first)) inDegree.set(first, 0);
+    if (!inDegree.has(after)) inDegree.set(after, 0);
+  }
+
+  for (const [first, after] of TYPE_DEPENDENCY_GRAPH) {
+    graph.get(first)!.push(after);
+    inDegree.set(after, inDegree.get(after)! + 1);
+  }
+
+  const ranks: Record<string, number> = {};
+  const queue: string[] = [];
+  let currentRank = 0;
+
+  for (const [node, degree] of inDegree.entries()) {
+    if (degree === 0) queue.push(node);
+  }
+
+  while (queue.length > 0) {
+    const size = queue.length;
+    for (let i = 0; i < size; i++) {
+      const node = queue.shift()!;
+      ranks[node] = currentRank;
+      for (const neighbor of graph.get(node)!) {
+        inDegree.set(neighbor, inDegree.get(neighbor)! - 1);
+        if (inDegree.get(neighbor) === 0) queue.push(neighbor);
+      }
+    }
+    currentRank++;
+  }
+  return ranks;
+}
+
+const typeRanks = buildTypeRanks();
+
+const PARENT_TYPE_PRIORITY: Record<string, number> = {
   "microsoft.cognitiveservices/accounts": 0,
   "microsoft.cognitiveservices/accounts/projects": 100,
   "microsoft.cognitiveservices/accounts/deployments": 100,
   "microsoft.cognitiveservices/accounts/models": 100,
-  "microsoft.network/virtualnetworks": 0,
-  "microsoft.network/virtualnetworks/subnets": 100,
-  "microsoft.network/networksecuritygroups": 10,
   "microsoft.storage/storageaccounts": 0,
   "microsoft.storage/storageaccounts/blobservices": 100,
   "microsoft.storage/storageaccounts/fileservices": 100,
@@ -45,8 +101,6 @@ const PARENT_TYPE_PRIORITY: Record<string, number> = {
   "microsoft.sql/servers": 0,
   "microsoft.sql/servers/databases": 100,
   "microsoft.sql/servers/firewallrules": 100,
-  "microsoft.web/serverfarms": 0,
-  "microsoft.web/sites": 50,
   "microsoft.web/sites/slots": 100,
   "microsoft.containerregistry/registries": 0,
   "microsoft.containerregistry/registries/webhooks": 100,
@@ -57,16 +111,40 @@ const PARENT_TYPE_PRIORITY: Record<string, number> = {
 
 export function sortResourcesForDeletion(resources: AzureResource[]): AzureResource[] {
   return [...resources].sort((a, b) => {
-    const typeDepthA = a.type.split("/").length;
-    const typeDepthB = b.type.split("/").length;
+    const typeA = a.type.toLowerCase();
+    const typeB = b.type.toLowerCase();
+
+    const getRank = (t: string) => {
+      if (typeRanks[t] !== undefined) return typeRanks[t];
+      const parts = t.split("/");
+      if (parts.length > 2) {
+        const base = parts.slice(0, 2).join("/");
+        return typeRanks[base];
+      }
+      return undefined;
+    };
+
+    const rankA = getRank(typeA);
+    const rankB = getRank(typeB);
+
+    if (rankA !== undefined && rankB !== undefined) {
+      if (rankA !== rankB) return rankA - rankB;
+    } else if (rankA !== undefined && rankB === undefined) {
+      return -1;
+    } else if (rankA === undefined && rankB !== undefined) {
+      return 1;
+    }
+
+    const typeDepthA = typeA.split("/").length;
+    const typeDepthB = typeB.split("/").length;
     if (typeDepthA !== typeDepthB) return typeDepthB - typeDepthA;
     const idDepthA = a.id.split("/").length;
     const idDepthB = b.id.split("/").length;
     if (idDepthA !== idDepthB) return idDepthB - idDepthA;
-    const prioA = PARENT_TYPE_PRIORITY[a.type.toLowerCase()] ?? 50;
-    const prioB = PARENT_TYPE_PRIORITY[b.type.toLowerCase()] ?? 50;
+    const prioA = PARENT_TYPE_PRIORITY[typeA] ?? 50;
+    const prioB = PARENT_TYPE_PRIORITY[typeB] ?? 50;
     if (prioA !== prioB) return prioB - prioA;
-    return a.type.localeCompare(b.type);
+    return typeA.localeCompare(typeB);
   });
 }
 
@@ -75,7 +153,11 @@ function isNestedResourceError(msg: string): boolean {
   return (
     lower.includes("nested resource") ||
     lower.includes("child resource") ||
-    (lower.includes("cannot delete") && lower.includes("exist"))
+    (lower.includes("cannot delete") && lower.includes("exist")) ||
+    lower.includes("must be disassociated") ||
+    lower.includes("must be detached") ||
+    lower.includes("is in use by") ||
+    lower.includes("referenced by")
   );
 }
 
@@ -97,9 +179,24 @@ function findChildResources(
       const lastSegment = q.slice(1, -1).split("/").pop();
       if (lastSegment) names.add(lastSegment.toLowerCase());
     }
-    return allResources.filter(
-      (r) => r.id !== parent.id && names.has(r.name.toLowerCase())
-    );
+    return allResources.filter((r) => {
+      if (r.id === parent.id || !names.has(r.name.toLowerCase())) return false;
+      
+      const pType = parent.type.toLowerCase();
+      const cType = r.type.toLowerCase();
+      
+      const isInGraph = TYPE_DEPENDENCY_GRAPH.some(([t1, t2]) => 
+        (t1.toLowerCase() === pType && t2.toLowerCase() === cType) ||
+        (t1.toLowerCase() === cType && t2.toLowerCase() === pType)
+      );
+      
+      if (isInGraph) {
+        return true; // Confirmed by graph
+      }
+      
+      // Generic fallback for types not hardcoded in the static graph
+      return true;
+    });
   }
   return [];
 }
@@ -336,6 +433,7 @@ export async function executeLiveRun(scheduleId: string, runId: string): Promise
             }
             pendingDeletions.push(resource);
             console.log(`[DeletionExecutor] Deferred "${resource.name}" — ${children.length} child(ren) inserted ahead`);
+            console.log(`[DeletionExecutor] Resource ${resource.name} reordered via retry-loop fallback after live failure (static graph missed this dependency)`);
           }
         } else {
           failed.push({ id: resource.id, name: resource.name, error: errorMsg ?? "Unknown error" });
