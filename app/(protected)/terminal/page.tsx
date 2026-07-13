@@ -29,7 +29,18 @@ interface SessionInfo {
   banner: string;
 }
 
-const WS_URL = process.env.NEXT_PUBLIC_TERMINAL_WS_URL || "ws://localhost:3001";
+const getWsUrl = () => {
+  if (typeof window === "undefined") return "ws://localhost:3001";
+  if (process.env.NEXT_PUBLIC_TERMINAL_WS_URL) return process.env.NEXT_PUBLIC_TERMINAL_WS_URL;
+  
+  const host = window.location.hostname;
+  if (host === "localhost" || host === "127.0.0.1") {
+    return `ws://${host}:3001`;
+  }
+  
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}`;
+};
 const WARNING_KEY = "terminal_warning_dismissed";
 
 export default function TerminalPage() {
@@ -145,7 +156,7 @@ export default function TerminalPage() {
     }
 
     setWsStatus("connecting");
-    const ws = new WebSocket(WS_URL);
+    const ws = new WebSocket(getWsUrl());
     wsRef.current = ws;
     ws.binaryType = "arraybuffer";
 
