@@ -13,6 +13,7 @@ export function EditVmDialog({ open, vm, onClose, onSaved }: { open: boolean; vm
   // Form state
   const [name, setName] = useState("");
   const [ipAddress, setIpAddress] = useState("");
+  const [status, setStatus] = useState("Active");
   const [configPresetId, setConfigPresetId] = useState<string>("CUSTOM");
   
   const [customVcpus, setCustomVcpus] = useState("");
@@ -34,6 +35,7 @@ export function EditVmDialog({ open, vm, onClose, onSaved }: { open: boolean; vm
       setCustomRamGb(vm.customRamGb ? String(vm.customRamGb) : "");
       setCustomDiskGb(vm.customDiskGb ? String(vm.customDiskGb) : "");
       setBillingType(vm.billingType || "MONTHLY");
+      setStatus(vm.status || "Active");
       setNotes(vm.notes || "");
       
       if (vm.billingType === "HOURLY" && vm.hourlyRate) setRate(String(vm.hourlyRate));
@@ -51,6 +53,7 @@ export function EditVmDialog({ open, vm, onClose, onSaved }: { open: boolean; vm
     const payload: any = {
       name,
       ipAddress,
+      status,
       billingType,
     };
 
@@ -110,6 +113,17 @@ export function EditVmDialog({ open, vm, onClose, onSaved }: { open: boolean; vm
             <div className="space-y-2">
               <label className="text-sm font-medium">IP Address <span className="text-red-500">*</span></label>
               <Input required value={ipAddress} onChange={e => setIpAddress(e.target.value)} placeholder="10.0.0.5" />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Status</label>
+              <select 
+                value={status} 
+                onChange={e => setStatus(e.target.value)}
+                className="w-full border border-gray-300 rounded-md text-sm px-3 py-2 bg-white"
+              >
+                <option value="Active">Active</option>
+                <option value="Passive">Passive</option>
+              </select>
             </div>
           </div>
 

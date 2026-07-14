@@ -24,6 +24,7 @@ export default function VmInventoryPage() {
   const [filterQuery, setFilterQuery] = useState("");
   const [filterBilling, setFilterBilling] = useState("ALL");
   const [filterStatus, setFilterStatus] = useState("ALL");
+  const [filterConfig, setFilterConfig] = useState("ALL");
   const [selectedVm, setSelectedVm] = useState<any>(null);
   
   const [editVm, setEditVm] = useState<any>(null);
@@ -144,15 +145,26 @@ export default function VmInventoryPage() {
               <option value="QUARTERLY">Quarterly</option>
             </select>
             <select 
-              value={filterStatus} 
-              onChange={e => setFilterStatus(e.target.value)} 
-              className="border border-gray-300 rounded-md text-sm px-3 py-2"
+              className="border border-gray-300 rounded-md text-sm px-3 py-2 bg-white"
+              value={filterStatus}
+              onChange={(e) => setFilterStatus(e.target.value)}
             >
               <option value="ALL">All Statuses</option>
               <option value="AVAILABLE">Available</option>
-              <option value="UNAVAILABLE">Unavailable / Assigned</option>
+              <option value="UNAVAILABLE">Unavailable</option>
+            </select>
+            <select 
+              className="border border-gray-300 rounded-md text-sm px-3 py-2 bg-white"
+              value={filterConfig}
+              onChange={(e) => setFilterConfig(e.target.value)}
+            >
+              <option value="ALL">All Configs</option>
+              <option value="16GB">16GB / 4 vCPU / 200GB SSD</option>
+              <option value="32GB">32GB / 8 vCPU / 500GB SSD</option>
+              <option value="Others">Others</option>
             </select>
           </div>
+
           {loading ? (
             <div className="py-16 text-center text-gray-400 text-sm">Loading…</div>
           ) : (
@@ -173,16 +185,30 @@ export default function VmInventoryPage() {
                     <th className="pb-3 pr-4 font-medium text-gray-500 text-xs uppercase tracking-wide">VM / IP</th>
                     <th className="pb-3 pr-4 font-medium text-gray-500 text-xs uppercase tracking-wide">Config</th>
                     <th className="pb-3 pr-4 font-medium text-gray-500 text-xs uppercase tracking-wide">Billing</th>
-                    <th className="pb-3 pr-4 font-medium text-gray-500 text-xs uppercase tracking-wide">Status</th>
+                    <th className="pb-3 pr-4 font-medium text-gray-500 text-xs uppercase tracking-wide">Status / Assign</th>
+                    <th className="pb-3 pr-4 font-medium text-gray-500 text-xs uppercase tracking-wide">Assignment Dates</th>
                     <th className="pb-3 font-medium text-gray-500 text-xs uppercase tracking-wide">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {vms.filter(vm => {
                     if (filterBilling !== "ALL" && vm.billingType !== filterBilling) return false;
-                    const isAssigned = vm.assignments && vm.assignments.length > 0;
-                    if (filterStatus === "AVAILABLE" && isAssigned) return false;
-                    if (filterStatus === "UNAVAILABLE" && !isAssigned) return false;
+                    const isAvailable = !(vm.assignments && vm.assignments.length > 0);
+                    if (filterStatus === "AVAILABLE" && !isAvailable) return false;
+                    if (filterStatus === "UNAVAILABLE" && isAvailable) return false;
+
+                    let configStr = "";
+                    if (vm.configPreset) configStr = vm.configPreset.name;
+                    else configStr = `${vm.customRamGb}GB / ${vm.customVcpus} vCPU / ${vm.customDiskGb}GB`;
+
+                    if (filterConfig !== "ALL") {
+                      if (filterConfig === "Others") {
+                        if (configStr.includes("16GB") || configStr.includes("32GB")) return false;
+                      } else {
+                        if (!configStr.includes(filterConfig)) return false;
+                      }
+                    }
+
                     if (filterQuery) {
                       const q = filterQuery.toLowerCase();
                       const matchName = vm.name.toLowerCase().includes(q) || vm.ipAddress.includes(q);
@@ -190,7 +216,10 @@ export default function VmInventoryPage() {
                       if (!matchName && !matchAssignee) return false;
                     }
                     return true;
-                  }).map((vm) => (
+                  }).map((vm) => {
+                    const isAvailable = !(vm.assignments && vm.assignments.length > 0);
+                    const currentAssignment = vm.assignments?.[0];
+                    return (
                     <tr key={vm.id}>
                       <td className="py-4 pr-4 pl-3">
                         <input 
@@ -216,19 +245,24 @@ export default function VmInventoryPage() {
                       <td className="py-4 pr-4">
                         <Badge variant="outline">{vm.billingType}</Badge>
                       </td>
-                      <td className="py-4">
-                        {vm.assignments && vm.assignments.length > 0 ? (
-                          <div className="flex flex-col items-start gap-1">
-                            <Badge variant="warning">Unavailable</Badge>
-                            {startDate && endDate && vm.assignments[0] && (
-                              <span className="text-xs text-gray-500 block">
-                                Assigned to {vm.assignments[0].assignedTo} 
-                                <br />({formatDate(vm.assignments[0].startDate)} - {formatDate(vm.assignments[0].endDate)})
-                              </span>
-                            )}
+                      <td className="py-4 pr-4">
+                        <div className="flex flex-col gap-1 items-start">
+                          <Badge variant={vm.status === "Passive" ? "secondary" : "default"} className={vm.status === "Passive" ? "bg-gray-100 text-gray-600" : "bg-green-50 text-green-700 hover:bg-green-100 border-green-200"}>
+                            {vm.status || "Active"}
+                          </Badge>
+                          <Badge variant={isAvailable ? "secondary" : "outline"} className={isAvailable ? "bg-gray-50 text-gray-600" : "bg-yellow-50 text-yellow-700 border-yellow-200"}>
+                            {isAvailable ? "Available" : "Unavailable"}
+                          </Badge>
+                        </div>
+                      </td>
+                      <td className="py-4 pr-4 text-xs text-gray-500">
+                        {currentAssignment ? (
+                          <div className="flex flex-col">
+                            <span>{formatDate(currentAssignment.startDate)}</span>
+                            <span>to {formatDate(currentAssignment.endDate)}</span>
                           </div>
                         ) : (
-                          <Badge variant="success">Available</Badge>
+                          <span className="text-gray-400">None</span>
                         )}
                       </td>
                       <td className="py-4">
@@ -243,7 +277,7 @@ export default function VmInventoryPage() {
                   ))}
                   {vms.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="py-8 text-center text-gray-400 text-sm">No VMs found.</td>
+                      <td colSpan={7} className="py-8 text-center text-gray-400 text-sm">No VMs found.</td>
                     </tr>
                   )}
                 </tbody>

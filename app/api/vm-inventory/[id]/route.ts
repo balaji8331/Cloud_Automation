@@ -16,6 +16,7 @@ const EditVmSchema = z.object({
   monthlyRate: z.number().optional().nullable(),
   quarterlyRate: z.number().optional().nullable(),
   notes: z.string().optional().nullable(),
+  status: z.string().optional(),
 });
 
 export async function PUT(

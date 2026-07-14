@@ -5,8 +5,8 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
 import Papa from "papaparse";
 
-const TEMPLATE_CSV = `ipAddress,VM-Username,VM-Password,VM-AssignedTo,VM-StartDate,VM-EndDate,configPreset,customVcpus,customRamGb,customDiskGb,billingType
-10.0.0.5,Administrator,SamplePass123!,John Doe,2024-01-01,2024-01-15,16GB / 4 vCPU / 200GB SSD,,,,MONTHLY`;
+const TEMPLATE_CSV = `ipAddress,VM-Username,VM-Password,VM-Status,VM-AssignedTo,VM-StartDate,VM-EndDate,configPreset,customVcpus,customRamGb,customDiskGb,billingType
+10.0.0.5,Administrator,SamplePass123!,Active,John Doe,2024-01-01,2024-01-15,16GB / 4 vCPU / 200GB SSD,,,,MONTHLY`;
 
 export function BulkAddCsvDialog({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: () => void }) {
   const { toast } = useToast();
@@ -77,6 +77,17 @@ export function BulkAddCsvDialog({ open, onClose, onSaved }: { open: boolean; on
         payload.password = "ChangeMe123!";
       } else {
         payload.password = row["VM-Password"];
+      }
+
+      if (row["VM-Status"]) {
+        const s = row["VM-Status"].trim();
+        if (s.toLowerCase() === "active" || s.toLowerCase() === "passive") {
+          payload.status = s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+        } else {
+          errors.push("Invalid VM-Status (must be Active or Passive)");
+        }
+      } else {
+        payload.status = "Active";
       }
 
       const billing = row.billingType ? row.billingType.toUpperCase() : "MONTHLY";
@@ -181,6 +192,7 @@ export function BulkAddCsvDialog({ open, onClose, onSaved }: { open: boolean; on
                 <th className="pr-4 pb-1 text-gray-600 font-medium">ipAddress</th>
                 <th className="pr-4 pb-1 text-gray-600 font-medium">VM-Username</th>
                 <th className="pr-4 pb-1 text-gray-600 font-medium">VM-Password</th>
+                <th className="pr-4 pb-1 text-gray-600 font-medium">VM-Status</th>
                 <th className="pr-4 pb-1 text-gray-600 font-medium">VM-AssignedTo</th>
                 <th className="pr-4 pb-1 text-gray-600 font-medium">VM-StartDate</th>
                 <th className="pr-4 pb-1 text-gray-600 font-medium">VM-EndDate</th>
@@ -196,6 +208,7 @@ export function BulkAddCsvDialog({ open, onClose, onSaved }: { open: boolean; on
                 <td className="pr-4">10.0.0.5</td>
                 <td className="pr-4">Administrator</td>
                 <td className="pr-4">SamplePass123!</td>
+                <td className="pr-4">Active</td>
                 <td className="pr-4">John Doe</td>
                 <td className="pr-4">2024-01-01</td>
                 <td className="pr-4">2024-01-15</td>

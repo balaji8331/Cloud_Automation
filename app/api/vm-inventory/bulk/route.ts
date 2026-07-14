@@ -22,6 +22,7 @@ const BulkItemSchema = z.object({
   assignedTo: z.string().optional(),
   startDate: z.string().optional(),
   endDate: z.string().optional(),
+  status: z.string().optional(),
 });
 
 const BulkCreateVmSchema = z.array(BulkItemSchema);

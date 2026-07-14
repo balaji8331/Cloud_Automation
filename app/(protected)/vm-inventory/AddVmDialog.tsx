@@ -15,6 +15,7 @@ export function AddVmDialog({ open, onClose, onSaved }: { open: boolean; onClose
   const [ipAddress, setIpAddress] = useState("");
   const [username, setUsername] = useState("Administrator");
   const [password, setPassword] = useState("");
+  const [status, setStatus] = useState("Active");
   const [configPresetId, setConfigPresetId] = useState<string>("CUSTOM");
   
   const [customVcpus, setCustomVcpus] = useState("");
@@ -32,6 +33,7 @@ export function AddVmDialog({ open, onClose, onSaved }: { open: boolean; onClose
       fetch("/api/vm-config-presets").then(r => r.json()).then(data => setPresets(data)).catch(() => {});
       // Reset form
       setName(""); setIpAddress(""); setUsername("Administrator"); setPassword("");
+      setStatus("Active");
       setConfigPresetId("CUSTOM"); setCustomVcpus(""); setCustomRamGb(""); setCustomDiskGb("");
       setBillingType("MONTHLY"); setRate(""); setNotes("");
     }
@@ -46,6 +48,7 @@ export function AddVmDialog({ open, onClose, onSaved }: { open: boolean; onClose
         ipAddress,
         username,
         password: password || "ChangeMe123!",
+        status,
         billingType,
         notes
       };
@@ -99,6 +102,17 @@ export function AddVmDialog({ open, onClose, onSaved }: { open: boolean; onClose
             <div className="space-y-2">
               <label className="text-sm font-medium">Password</label>
               <Input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Leave blank for ChangeMe123!" />
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Status</label>
+              <select 
+                value={status} 
+                onChange={e => setStatus(e.target.value)}
+                className="w-full border border-gray-300 rounded-md text-sm px-3 py-2 bg-white"
+              >
+                <option value="Active">Active</option>
+                <option value="Passive">Passive</option>
+              </select>
             </div>
           </div>
 
