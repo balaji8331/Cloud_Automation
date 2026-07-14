@@ -247,10 +247,10 @@ export default function VmInventoryPage() {
                       </td>
                       <td className="py-4 pr-4">
                         <div className="flex flex-col gap-1 items-start">
-                          <Badge variant={vm.status === "Passive" ? "secondary" : "default"} className={vm.status === "Passive" ? "bg-gray-100 text-gray-600" : "bg-green-50 text-green-700 hover:bg-green-100 border-green-200"}>
+                          <Badge variant={vm.status === "Passive" ? "outline" : "default"} className={vm.status === "Passive" ? "bg-gray-100 text-gray-600" : "bg-green-50 text-green-700 hover:bg-green-100 border-green-200"}>
                             {vm.status || "Active"}
                           </Badge>
-                          <Badge variant={isAvailable ? "secondary" : "outline"} className={isAvailable ? "bg-gray-50 text-gray-600" : "bg-yellow-50 text-yellow-700 border-yellow-200"}>
+                          <Badge variant={isAvailable ? "outline" : "warning"} className={isAvailable ? "bg-gray-50 text-gray-600" : "bg-yellow-50 text-yellow-700 border-yellow-200"}>
                             {isAvailable ? "Available" : "Unavailable"}
                           </Badge>
                         </div>
@@ -274,7 +274,8 @@ export default function VmInventoryPage() {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                   {vms.length === 0 && (
                     <tr>
                       <td colSpan={7} className="py-8 text-center text-gray-400 text-sm">No VMs found.</td>
