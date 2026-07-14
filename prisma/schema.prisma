@@ -37,6 +37,7 @@ model User {
   ScriptRun         ScriptRun[]
   AciConfig         AciConfig[]
   ScriptSchedule    ScriptSchedule[]
+  vmAssignments     VmAssignment[]
 
   @@map("users")
 }
@@ -611,4 +612,77 @@ enum TerminalSessionStatus {
   ACTIVE
   ENDED
   ERROR
+}
+
+// ─────────────────────────────────────────────
+// VM INVENTORY & TRAINING ALLOCATION
+// ─────────────────────────────────────────────
+
+model VmConfigPreset {
+  id        String   @id @default(cuid())
+  name      String
+  vcpus     Int
+  ramGb     Int
+  diskGb    Int
+  diskType  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  inventoryItems VmInventoryItem[]
+
+  @@map("vm_config_presets")
+}
+
+enum BillingType {
+  HOURLY
+  MONTHLY
+  QUARTERLY
+}
+
+model VmInventoryItem {
+  id             String          @id @default(cuid())
+  name           String
+  ipAddress      String
+  username       String
+  passwordEnc    String          @db.Text
+  
+  configPresetId String?
+  configPreset   VmConfigPreset? @relation(fields: [configPresetId], references: [id])
+  
+  customVcpus    Int?
+  customRamGb    Int?
+  customDiskGb   Int?
+  
+  billingType    BillingType
+  hourlyRate     Decimal?
+  monthlyRate    Decimal?
+  quarterlyRate  Decimal?
+  
+  notes          String?         @db.Text
+  
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  assignments    VmAssignment[]
+
+  @@map("vm_inventory_items")
+}
+
+model VmAssignment {
+  id                String          @id @default(cuid())
+  vmInventoryItemId String
+  vmInventoryItem   VmInventoryItem @relation(fields: [vmInventoryItemId], references: [id], onDelete: Cascade)
+  
+  assignedTo        String
+  trainingName      String?
+  startDate         DateTime
+  endDate           DateTime
+  
+  createdById       String
+  createdBy         User            @relation(fields: [createdById], references: [id])
+  
+  createdAt         DateTime        @default(now())
+
+  @@index([vmInventoryItemId, startDate, endDate])
+  @@map("vm_assignments")
 }

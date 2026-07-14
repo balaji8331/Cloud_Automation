@@ -14,6 +14,7 @@ import {
   Terminal,
   TerminalSquare,
   Settings,
+  Monitor,
 } from "lucide-react";
 import { signOut, useSession } from "next-auth/react";
 import { cn } from "@/lib/utils";
@@ -23,6 +24,7 @@ const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/tenants", label: "Tenants", icon: Building2, adminOnly: true },
   { href: "/resources", label: "Resources", icon: Server },
+  { href: "/vm-inventory", label: "VM Inventory", icon: Monitor },
   { href: "/automation", label: "Automation", icon: Zap, adminOnly: true },
   { href: "/budgets", label: "Budgets", icon: PiggyBank },
   { href: "/reports", label: "Reports", icon: FileText, financeOnly: true },

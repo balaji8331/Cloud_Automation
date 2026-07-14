@@ -46,7 +46,12 @@ export type AuditAction =
   | "SCRIPT_SCHEDULE_DELETED"
   | "SCRIPT_RUN_TRIGGERED"
   | "SCRIPT_RUN_COMPLETED"
-  | "SCRIPT_RUN_FAILED";
+  | "SCRIPT_RUN_FAILED"
+  // VM Inventory actions
+  | "CREATE_VM"
+  | "BULK_CREATE_VM"
+  | "AZURE_VM_PASSWORD_REVEAL"
+  | "CREATE_VM_ASSIGNMENT";
 
 export interface AuditParams {
   userId: string;

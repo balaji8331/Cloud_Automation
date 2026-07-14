@@ -14,22 +14,35 @@ async function main() {
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
     console.log(`Admin user already exists: ${email}`);
-    return;
+  } else {
+    const hash = await bcrypt.hash(password, 12);
+    const user = await prisma.user.create({
+      data: {
+        email,
+        name: "Admin",
+        password: hash,
+        role: UserRole.ADMIN,
+      },
+    });
+    console.log(`✅ Admin user created: ${user.email}`);
   }
 
-  const hash = await bcrypt.hash(password, 12);
-  const user = await prisma.user.create({
-    data: {
-      email,
-      name: "Admin",
-      password: hash,
-      role: UserRole.ADMIN,
-    },
-  });
 
-  console.log(`✅ Admin user created: ${user.email}`);
+
+  // Seed VM Config Presets
+  const presets = [
+    { name: "16GB / 4 vCPU / 200GB SSD", vcpus: 4, ramGb: 16, diskGb: 200, diskType: "SSD" },
+    { name: "32GB / 8 vCPU / 500GB SSD", vcpus: 8, ramGb: 32, diskGb: 500, diskType: "SSD" },
+  ];
+
+  for (const p of presets) {
+    const existingPreset = await prisma.vmConfigPreset.findFirst({ where: { name: p.name } });
+    if (!existingPreset) {
+      await prisma.vmConfigPreset.create({ data: p });
+      console.log(`✅ Created VM Config Preset: ${p.name}`);
+    }
+  }
 }
-
 main()
   .catch((e) => {
     console.error(e);
