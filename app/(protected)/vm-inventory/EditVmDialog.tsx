@@ -3,7 +3,6 @@ import { useState, useEffect } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/toast";
 
 export function EditVmDialog({ open, vm, onClose, onSaved }: { open: boolean; vm: any; onClose: () => void; onSaved: () => void }) {
@@ -105,11 +104,11 @@ export function EditVmDialog({ open, vm, onClose, onSaved }: { open: boolean; vm
           {/* Basic Info */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label>VM Name <span className="text-red-500">*</span></Label>
+              <label className="text-sm font-medium">VM Name <span className="text-red-500">*</span></label>
               <Input required value={name} onChange={e => setName(e.target.value)} placeholder="e.g. jumpserver-01" />
             </div>
             <div className="space-y-2">
-              <Label>IP Address <span className="text-red-500">*</span></Label>
+              <label className="text-sm font-medium">IP Address <span className="text-red-500">*</span></label>
               <Input required value={ipAddress} onChange={e => setIpAddress(e.target.value)} placeholder="10.0.0.5" />
             </div>
           </div>
@@ -117,7 +116,7 @@ export function EditVmDialog({ open, vm, onClose, onSaved }: { open: boolean; vm
           <div className="space-y-4 border-t pt-4">
             <h4 className="font-medium text-sm">Specs Configuration</h4>
             <div className="space-y-2">
-              <Label>Preset</Label>
+              <label className="text-sm font-medium">Preset</label>
               <select 
                 value={configPresetId} 
                 onChange={e => setConfigPresetId(e.target.value)}
@@ -142,7 +141,7 @@ export function EditVmDialog({ open, vm, onClose, onSaved }: { open: boolean; vm
             <h4 className="font-medium text-sm">Billing</h4>
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label>Billing Cycle</Label>
+                <label className="text-sm font-medium">Billing Cycle</label>
                 <select 
                   value={billingType} 
                   onChange={e => setBillingType(e.target.value)}
