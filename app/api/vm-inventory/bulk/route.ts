@@ -19,6 +19,9 @@ const BulkItemSchema = z.object({
   monthlyRate: z.number().optional().nullable(),
   quarterlyRate: z.number().optional().nullable(),
   notes: z.string().optional().nullable(),
+  assignedTo: z.string().optional(),
+  startDate: z.string().optional(),
+  endDate: z.string().optional(),
 });
 
 const BulkCreateVmSchema = z.array(BulkItemSchema);
@@ -33,27 +36,35 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
     }
 
-    const createData = parsed.data.map(item => {
-      const { password, ...data } = item;
-      return {
-        ...data,
-        passwordEnc: encrypt(password),
-      };
-    });
-
-    const result = await prisma.vmInventoryItem.createMany({
-      data: createData,
-    });
+    const result = await prisma.$transaction(
+      parsed.data.map(item => {
+        const { password, assignedTo, startDate, endDate, ...data } = item;
+        return prisma.vmInventoryItem.create({
+          data: {
+            ...data,
+            passwordEnc: encrypt(password),
+            assignments: (assignedTo && startDate && endDate) ? {
+              create: {
+                assignedTo,
+                startDate: new Date(startDate),
+                endDate: new Date(endDate),
+                createdById: session.user.id
+              }
+            } : undefined
+          }
+        });
+      })
+    );
 
     await writeAuditLog({
       userId: session.user.id,
       action: "BULK_CREATE_VM",
       resourceType: "vm_inventory",
       resourceId: "bulk",
-      metadata: { count: result.count }
+      metadata: { count: result.length }
     });
 
-    return NextResponse.json({ success: true, count: result.count });
+    return NextResponse.json({ success: true, count: result.length });
   } catch (err: unknown) {
     if (err instanceof Error && "status" in err) {
       return NextResponse.json({ error: err.message }, { status: (err as any).status });

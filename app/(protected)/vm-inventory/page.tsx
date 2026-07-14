@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { Plus, Search } from "lucide-react";
+import { Plus, Search, Trash2, Edit } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +10,7 @@ import { formatDate } from "@/lib/utils";
 import { AddVmDialog } from "./AddVmDialog";
 import { BulkAddCsvDialog } from "./BulkAddCsvDialog";
 import { VmDetailSheet } from "./VmDetailSheet";
+import { EditVmDialog } from "./EditVmDialog";
 
 export default function VmInventoryPage() {
   const { toast } = useToast();
@@ -24,6 +25,10 @@ export default function VmInventoryPage() {
   const [filterBilling, setFilterBilling] = useState("ALL");
   const [filterStatus, setFilterStatus] = useState("ALL");
   const [selectedVm, setSelectedVm] = useState<any>(null);
+  
+  const [editVm, setEditVm] = useState<any>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchVms = useCallback(async () => {
     setLoading(true);
@@ -48,6 +53,29 @@ export default function VmInventoryPage() {
   useEffect(() => {
     fetchVms();
   }, [fetchVms]);
+
+  async function handleBulkDelete() {
+    if (!confirm(`Are you sure you want to delete ${selectedIds.length} VMs?`)) return;
+    setDeleting(true);
+    try {
+      const res = await fetch("/api/vm-inventory/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selectedIds }),
+      });
+      if (res.ok) {
+        toast({ variant: "success", title: "Deleted successfully" });
+        setSelectedIds([]);
+        fetchVms();
+      } else {
+        toast({ variant: "destructive", title: "Failed to delete" });
+      }
+    } catch {
+      toast({ variant: "destructive", title: "Network error" });
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -87,7 +115,15 @@ export default function VmInventoryPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>VM Inventory <span className="text-sm font-normal text-gray-500 ml-1">({vms.length})</span></CardTitle>
+          <div className="flex justify-between items-center">
+            <CardTitle>VM Inventory <span className="text-sm font-normal text-gray-500 ml-1">({vms.length})</span></CardTitle>
+            {selectedIds.length > 0 && (
+              <Button variant="destructive" size="sm" onClick={handleBulkDelete} loading={deleting}>
+                <Trash2 className="h-4 w-4 mr-2" />
+                Delete {selectedIds.length} Selected
+              </Button>
+            )}
+          </div>
         </CardHeader>
         <CardContent>
           <div className="flex flex-wrap gap-4 mb-4">
@@ -124,6 +160,16 @@ export default function VmInventoryPage() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-gray-200 text-left">
+                    <th className="pb-3 pr-4 pl-3 w-8">
+                      <input 
+                        type="checkbox" 
+                        checked={vms.length > 0 && selectedIds.length === vms.length}
+                        onChange={(e) => {
+                          if (e.target.checked) setSelectedIds(vms.map(v => v.id));
+                          else setSelectedIds([]);
+                        }}
+                      />
+                    </th>
                     <th className="pb-3 pr-4 font-medium text-gray-500 text-xs uppercase tracking-wide">VM / IP</th>
                     <th className="pb-3 pr-4 font-medium text-gray-500 text-xs uppercase tracking-wide">Config</th>
                     <th className="pb-3 pr-4 font-medium text-gray-500 text-xs uppercase tracking-wide">Billing</th>
@@ -146,6 +192,16 @@ export default function VmInventoryPage() {
                     return true;
                   }).map((vm) => (
                     <tr key={vm.id}>
+                      <td className="py-4 pr-4 pl-3">
+                        <input 
+                          type="checkbox" 
+                          checked={selectedIds.includes(vm.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) setSelectedIds([...selectedIds, vm.id]);
+                            else setSelectedIds(selectedIds.filter(id => id !== vm.id));
+                          }}
+                        />
+                      </td>
                       <td className="py-4 pr-4">
                         <p className="font-medium text-gray-900">{vm.name}</p>
                         <p className="text-xs text-gray-500">{vm.ipAddress}</p>
@@ -176,13 +232,18 @@ export default function VmInventoryPage() {
                         )}
                       </td>
                       <td className="py-4">
-                        <Button variant="outline" size="sm" onClick={() => setSelectedVm(vm)}>Details</Button>
+                        <div className="flex gap-2 items-center">
+                          <Button variant="outline" size="sm" onClick={() => setSelectedVm(vm)}>Details</Button>
+                          <Button variant="ghost" size="sm" onClick={() => setEditVm(vm)}>
+                            <Edit className="h-4 w-4 text-gray-500" />
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))}
                   {vms.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="py-8 text-center text-gray-400 text-sm">No VMs found.</td>
+                      <td colSpan={6} className="py-8 text-center text-gray-400 text-sm">No VMs found.</td>
                     </tr>
                   )}
                 </tbody>
@@ -207,6 +268,12 @@ export default function VmInventoryPage() {
         vm={selectedVm}
         onClose={() => setSelectedVm(null)}
         onRefresh={fetchVms}
+      />
+      <EditVmDialog
+        open={!!editVm}
+        vm={editVm}
+        onClose={() => setEditVm(null)}
+        onSaved={() => { setEditVm(null); fetchVms(); }}
       />
     </div>
   );

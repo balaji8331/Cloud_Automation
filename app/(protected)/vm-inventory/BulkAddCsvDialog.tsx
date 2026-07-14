@@ -5,8 +5,8 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/components/ui/toast";
 import Papa from "papaparse";
 
-const TEMPLATE_CSV = `ipAddress,VM-Username,VM-Password,configPreset,customVcpus,customRamGb,customDiskGb,billingType
-10.0.0.5,Administrator,SamplePass123!,16GB / 4 vCPU / 200GB SSD,,,,MONTHLY`;
+const TEMPLATE_CSV = `ipAddress,VM-Username,VM-Password,VM-AssignedTo,VM-StartDate,VM-EndDate,configPreset,customVcpus,customRamGb,customDiskGb,billingType
+10.0.0.5,Administrator,SamplePass123!,John Doe,2024-01-01,2024-01-15,16GB / 4 vCPU / 200GB SSD,,,,MONTHLY`;
 
 export function BulkAddCsvDialog({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: () => void }) {
   const { toast } = useToast();
@@ -71,11 +71,30 @@ export function BulkAddCsvDialog({ open, onClose, onSaved }: { open: boolean; on
       if (!row["VM-Password"]) errors.push("Missing VM-Password");
       else payload.password = row["VM-Password"];
 
-      const billing = row.billingType?.toUpperCase();
+      const billing = row.billingType ? row.billingType.toUpperCase() : "MONTHLY";
       if (!["HOURLY", "MONTHLY", "QUARTERLY"].includes(billing)) {
         errors.push("Invalid billingType (must be HOURLY, MONTHLY, or QUARTERLY)");
       } else {
         payload.billingType = billing;
+      }
+
+      if (row["VM-StartDate"] || row["VM-EndDate"] || row["VM-AssignedTo"]) {
+        if (!row["VM-AssignedTo"]) errors.push("Missing VM-AssignedTo (required if dates provided)");
+        if (!row["VM-StartDate"]) errors.push("Missing VM-StartDate");
+        if (!row["VM-EndDate"]) errors.push("Missing VM-EndDate");
+        
+        if (row["VM-StartDate"] && row["VM-EndDate"]) {
+          const s = new Date(row["VM-StartDate"]);
+          const e = new Date(row["VM-EndDate"]);
+          if (isNaN(s.getTime())) errors.push("Invalid VM-StartDate (use YYYY-MM-DD)");
+          else if (isNaN(e.getTime())) errors.push("Invalid VM-EndDate (use YYYY-MM-DD)");
+          else if (e < s) errors.push("EndDate cannot be before StartDate");
+          else {
+            payload.assignedTo = row["VM-AssignedTo"];
+            payload.startDate = s.toISOString();
+            payload.endDate = e.toISOString();
+          }
+        }
       }
 
       // Handle config
@@ -88,9 +107,7 @@ export function BulkAddCsvDialog({ open, onClose, onSaved }: { open: boolean; on
         const ram = parseInt(row.customRamGb);
         const disk = parseInt(row.customDiskGb);
         
-        if (isNaN(vcpus) || isNaN(ram) || isNaN(disk)) {
-          errors.push("Missing configPreset OR complete custom specs (vcpus, ram, disk)");
-        } else {
+        if (!isNaN(vcpus) && !isNaN(ram) && !isNaN(disk)) {
           payload.customVcpus = vcpus;
           payload.customRamGb = ram;
           payload.customDiskGb = disk;
@@ -156,6 +173,9 @@ export function BulkAddCsvDialog({ open, onClose, onSaved }: { open: boolean; on
                 <th className="pr-4 pb-1 text-gray-600 font-medium">ipAddress</th>
                 <th className="pr-4 pb-1 text-gray-600 font-medium">VM-Username</th>
                 <th className="pr-4 pb-1 text-gray-600 font-medium">VM-Password</th>
+                <th className="pr-4 pb-1 text-gray-600 font-medium">VM-AssignedTo</th>
+                <th className="pr-4 pb-1 text-gray-600 font-medium">VM-StartDate</th>
+                <th className="pr-4 pb-1 text-gray-600 font-medium">VM-EndDate</th>
                 <th className="pr-4 pb-1 text-gray-600 font-medium">configPreset</th>
                 <th className="pr-4 pb-1 text-gray-600 font-medium">customVcpus</th>
                 <th className="pr-4 pb-1 text-gray-600 font-medium">customRamGb</th>
@@ -168,6 +188,9 @@ export function BulkAddCsvDialog({ open, onClose, onSaved }: { open: boolean; on
                 <td className="pr-4">10.0.0.5</td>
                 <td className="pr-4">Administrator</td>
                 <td className="pr-4">SamplePass123!</td>
+                <td className="pr-4">John Doe</td>
+                <td className="pr-4">2024-01-01</td>
+                <td className="pr-4">2024-01-15</td>
                 <td className="pr-4">16GB / 4 vCPU / 200GB SSD</td>
                 <td className="pr-4"></td>
                 <td className="pr-4"></td>
