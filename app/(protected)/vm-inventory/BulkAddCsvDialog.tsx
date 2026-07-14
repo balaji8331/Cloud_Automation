@@ -42,15 +42,20 @@ export function BulkAddCsvDialog({ open, onClose, onSaved }: { open: boolean; on
       header: true,
       skipEmptyLines: true,
       complete: (results) => {
+        console.log("[CSV Upload] Papa.parse complete. results.data:", results.data);
         validateRows(results.data);
       },
-      error: () => {
+      error: (err) => {
+        console.error("[CSV Upload] Papa parse error:", err);
         toast({ variant: "destructive", title: "Failed to parse CSV" });
       }
     });
+
+    e.target.value = '';
   }
 
   function validateRows(data: any[]) {
+    console.log("[CSV Upload] Validating data array of length:", data.length);
     const validated = data.map((row, index) => {
       const errors = [];
       const payload: any = {};
@@ -68,8 +73,11 @@ export function BulkAddCsvDialog({ open, onClose, onSaved }: { open: boolean; on
         payload.username = row["VM-Username"];
       }
 
-      if (!row["VM-Password"]) errors.push("Missing VM-Password");
-      else payload.password = row["VM-Password"];
+      if (!row["VM-Password"]) {
+        payload.password = "ChangeMe123!";
+      } else {
+        payload.password = row["VM-Password"];
+      }
 
       const billing = row.billingType ? row.billingType.toUpperCase() : "MONTHLY";
       if (!["HOURLY", "MONTHLY", "QUARTERLY"].includes(billing)) {

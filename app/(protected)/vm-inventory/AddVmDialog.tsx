@@ -42,7 +42,12 @@ export function AddVmDialog({ open, onClose, onSaved }: { open: boolean; onClose
     setSaving(true);
     try {
       const payload: any = {
-        name, ipAddress, username, password, billingType, notes
+        name,
+        ipAddress,
+        username,
+        password: password || "ChangeMe123!",
+        billingType,
+        notes
       };
       
       if (configPresetId !== "CUSTOM") {
@@ -91,7 +96,10 @@ export function AddVmDialog({ open, onClose, onSaved }: { open: boolean; onClose
             <Input label="VM Name" value={name} onChange={e => setName(e.target.value)} required />
             <Input label="IP Address" value={ipAddress} onChange={e => setIpAddress(e.target.value)} required />
             <Input label="Admin Username" value={username} onChange={e => setUsername(e.target.value)} required />
-            <Input label="Admin Password" type="password" value={password} onChange={e => setPassword(e.target.value)} required />
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Password</label>
+              <Input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Leave blank for ChangeMe123!" />
+            </div>
           </div>
 
           <div className="pt-2">
