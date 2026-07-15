@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/components/ui/toast";
-import { Eye, Copy } from "lucide-react";
+import { Eye, Copy, Info } from "lucide-react";
 import { formatDate } from "@/lib/utils";
 
 export function VmDetailSheet({ open, vm, onClose, onRefresh }: { open: boolean, vm: any, onClose: () => void, onRefresh?: () => void }) {
@@ -114,6 +114,29 @@ export function VmDetailSheet({ open, vm, onClose, onRefresh }: { open: boolean,
               </Button>
             )}
             <p className="text-xs text-gray-400 mt-2">Revealing the password is logged to the audit trail.</p>
+          </div>
+
+          <div className="bg-gray-50 p-4 rounded border">
+            <div className="flex items-center gap-1 mb-2">
+              <p className="text-sm font-medium">Guacamole Access</p>
+              <div className="group relative cursor-help">
+                <Info className="h-4 w-4 text-gray-400 hover:text-gray-600" />
+                <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-64 bg-gray-900 text-white text-xs rounded p-2 hidden group-hover:block z-10 normal-case font-normal shadow-lg">
+                  Guacamole Access shows who currently has login permission to this VM via the remote desktop gateway (synced from Guacamole automatically). Training Assignment is this portal's own booking record for planning.
+                </div>
+              </div>
+            </div>
+            {vm.guacamoleAccessSyncs && vm.guacamoleAccessSyncs.length > 0 ? (
+              <div className="flex flex-wrap gap-2">
+                {vm.guacamoleAccessSyncs.map((sync: any) => (
+                  <Badge key={sync.id} variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+                    {sync.guacamoleUsername} ({sync.guacamoleConnectionName})
+                  </Badge>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-gray-500 italic">No Guacamole connection found for this IP.</p>
+            )}
           </div>
 
           <div>

@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
-import { Plus, Search, Trash2, Edit } from "lucide-react";
+import { Plus, Search, Trash2, Edit, RefreshCw, AlertTriangle, Info } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -20,6 +20,9 @@ export default function VmInventoryPage() {
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
+  const [syncingGuac, setSyncingGuac] = useState(false);
+  const [guacSyncFailed, setGuacSyncFailed] = useState(false);
+  const [guacLastSync, setGuacLastSync] = useState<string | null>(null);
   
   const [filterQuery, setFilterQuery] = useState("");
   const [filterBilling, setFilterBilling] = useState("ALL");
@@ -40,7 +43,14 @@ export default function VmInventoryPage() {
       
       const res = await fetch(`/api/vm-inventory?${query.toString()}`);
       if (res.ok) {
-        setVms(await res.json());
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setVms(data);
+        } else {
+          setVms(data.items || []);
+          setGuacSyncFailed(data.guacamoleSyncFailed || false);
+          setGuacLastSync(data.guacamoleLastSyncedAt || null);
+        }
       } else {
         toast({ variant: "destructive", title: "Failed to fetch VMs" });
       }
@@ -78,6 +88,25 @@ export default function VmInventoryPage() {
     }
   }
 
+  async function handleGuacamoleSync() {
+    setSyncingGuac(true);
+    try {
+      const res = await fetch("/api/vm-inventory/guacamole-sync", { method: "POST" });
+      if (res.ok) {
+        toast({ variant: "success", title: "Guacamole sync triggered!" });
+        // Poll for updates a few times
+        setTimeout(fetchVms, 3000);
+        setTimeout(fetchVms, 6000);
+      } else {
+        toast({ variant: "destructive", title: "Failed to trigger sync" });
+      }
+    } catch {
+      toast({ variant: "destructive", title: "Network error" });
+    } finally {
+      setSyncingGuac(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -85,6 +114,10 @@ export default function VmInventoryPage() {
           Manage VM Inventory and Training Allocations.
         </p>
         <div className="flex gap-2">
+          <Button variant="outline" onClick={handleGuacamoleSync} disabled={syncingGuac}>
+            <RefreshCw className={`mr-2 h-4 w-4 ${syncingGuac ? "animate-spin" : ""}`} />
+            Sync Guacamole
+          </Button>
           <Button variant="outline" onClick={() => setBulkDialogOpen(true)}>
             Bulk Add (CSV)
           </Button>
@@ -94,6 +127,15 @@ export default function VmInventoryPage() {
           </Button>
         </div>
       </div>
+
+      {guacSyncFailed && guacLastSync && (
+        <div className="bg-yellow-50 border border-yellow-200 text-yellow-800 px-4 py-3 rounded-md flex items-center text-sm">
+          <AlertTriangle className="h-5 w-5 mr-2 text-yellow-600" />
+          <span>
+            <strong>Guacamole sync unavailable</strong> — showing data from last successful sync ({formatDate(guacLastSync)}). The SSH tunnel may be down.
+          </span>
+        </div>
+      )}
 
       <Card className="bg-blue-50/50 border-blue-100">
         <CardContent className="p-4 flex items-end gap-4">
@@ -186,6 +228,17 @@ export default function VmInventoryPage() {
                     <th className="pb-3 pr-4 font-medium text-gray-500 text-xs uppercase tracking-wide">Config</th>
                     <th className="pb-3 pr-4 font-medium text-gray-500 text-xs uppercase tracking-wide">Billing</th>
                     <th className="pb-3 pr-4 font-medium text-gray-500 text-xs uppercase tracking-wide">Status / Assign</th>
+                    <th className="pb-3 pr-4 font-medium text-gray-500 text-xs uppercase tracking-wide">
+                      <div className="flex items-center">
+                        Guacamole Access
+                        <div className="group relative ml-1 cursor-help">
+                          <Info className="h-4 w-4 text-gray-400 hover:text-gray-600" />
+                          <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-64 bg-gray-900 text-white text-xs rounded p-2 hidden group-hover:block z-10 normal-case font-normal shadow-lg">
+                            Guacamole Access shows who currently has login permission to this VM via the remote desktop gateway (synced from Guacamole automatically). Training Assignment is this portal's own booking record for planning — update it manually when scheduling.
+                          </div>
+                        </div>
+                      </div>
+                    </th>
                     <th className="pb-3 pr-4 font-medium text-gray-500 text-xs uppercase tracking-wide">Assignment Dates</th>
                     <th className="pb-3 font-medium text-gray-500 text-xs uppercase tracking-wide">Actions</th>
                   </tr>
@@ -254,6 +307,19 @@ export default function VmInventoryPage() {
                             {isAvailable ? "Available" : "Unavailable"}
                           </Badge>
                         </div>
+                      </td>
+                      <td className="py-4 pr-4">
+                        {vm.guacamoleAccessSyncs && vm.guacamoleAccessSyncs.length > 0 ? (
+                          <div className="flex flex-wrap gap-1">
+                            {vm.guacamoleAccessSyncs.map((sync: any) => (
+                              <Badge key={sync.id} variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+                                {sync.guacamoleUsername}
+                              </Badge>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-gray-400 text-xs italic">No connection found for IP</span>
+                        )}
                       </td>
                       <td className="py-4 pr-4 text-xs text-gray-500">
                         {currentAssignment ? (

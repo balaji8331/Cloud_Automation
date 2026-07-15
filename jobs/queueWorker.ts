@@ -9,6 +9,7 @@ import { executeScheduleRun } from "./deletionExecutor";
 import { executeScriptRun } from "./scriptExecutor";
 import { detectAnomalies } from "./anomaly";
 import { checkBudgetAlerts } from "./budgetAlerts";
+import { processGuacamoleSync } from "./guacamoleSync";
 
 const POLL_INTERVAL_MS = 5000;
 let isPolling = false;
@@ -54,6 +55,10 @@ async function processJob(job: any) {
 
         case JobType.BUDGET_ALERT_CHECK:
           await checkBudgetAlerts();
+          break;
+
+        case JobType.GUACAMOLE_SYNC:
+          await processGuacamoleSync();
           break;
 
         default:

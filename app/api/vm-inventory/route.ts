@@ -28,6 +28,7 @@ export async function GET(req: Request) {
       include: {
         configPreset: true,
         assignments: assignmentsInclude,
+        guacamoleAccessSyncs: true,
       },
       orderBy: { createdAt: "desc" },
     });
@@ -38,7 +39,28 @@ export async function GET(req: Request) {
       return rest;
     });
 
-    return NextResponse.json(safeItems);
+    // Determine latest sync time and if there's a recent failure
+    const latestSyncRecord = await prisma.guacamoleAccessSync.findFirst({
+      orderBy: { lastSyncedAt: 'desc' }
+    });
+    
+    const failedJob = await prisma.jobQueue.findFirst({
+      where: { jobType: 'GUACAMOLE_SYNC', status: 'FAILED' },
+      orderBy: { createdAt: 'desc' }
+    });
+    
+    const successJob = await prisma.jobQueue.findFirst({
+      where: { jobType: 'GUACAMOLE_SYNC', status: 'COMPLETED' },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    const isSyncFailing = failedJob && (!successJob || failedJob.createdAt > successJob.createdAt);
+
+    return NextResponse.json({
+      items: safeItems,
+      guacamoleSyncFailed: !!isSyncFailing,
+      guacamoleLastSyncedAt: latestSyncRecord?.lastSyncedAt || null
+    });
   } catch (err: unknown) {
     if (err instanceof Error && "status" in err) {
       return NextResponse.json({ error: err.message }, { status: (err as any).status });

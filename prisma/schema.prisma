@@ -451,6 +451,7 @@ enum JobType {
   ANOMALY_DETECTION
   BUDGET_ALERT_CHECK
   SCRIPT_EXECUTION
+  GUACAMOLE_SYNC
 }
 
 enum JobPriority {
@@ -665,6 +666,7 @@ model VmInventoryItem {
   updatedAt      DateTime        @updatedAt
 
   assignments    VmAssignment[]
+  guacamoleAccessSyncs GuacamoleAccessSync[]
 
   @@map("vm_inventory_items")
 }
@@ -686,4 +688,16 @@ model VmAssignment {
 
   @@index([vmInventoryItemId, startDate, endDate])
   @@map("vm_assignments")
+}
+
+model GuacamoleAccessSync {
+  id                      String          @id @default(cuid())
+  vmInventoryItemId       String
+  vmInventoryItem         VmInventoryItem @relation(fields: [vmInventoryItemId], references: [id], onDelete: Cascade)
+  guacamoleUsername       String
+  guacamoleConnectionName String
+  lastSyncedAt            DateTime
+
+  @@unique([vmInventoryItemId, guacamoleUsername])
+  @@map("guacamole_access_syncs")
 }
